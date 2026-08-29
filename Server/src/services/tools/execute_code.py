@@ -41,19 +41,19 @@ async def execute_code(
         "Action to perform.",
     ],
     code: Annotated[
-        str,
+        str | None,
         "C# code to execute (for 'execute' action). Must be a valid method body. "
         "Access UnityEngine and UnityEditor namespaces. Use 'return' to send data back.",
-    ] | None = None,
+    ] = None,
     safety_checks: Annotated[
         bool,
         "Enable basic blocked-pattern checks (File.Delete, Process.Start, infinite loops, etc). "
         "Not a full sandbox — advanced bypass is possible. Default: true.",
     ] = True,
     index: Annotated[
-        int,
+        int | None,
         "History entry index to replay (for 'replay' action).",
-    ] | None = None,
+    ] = None,
     limit: Annotated[
         int,
         "Number of history entries to return (for 'get_history' action, 1-50). Default: 10.",
@@ -64,6 +64,13 @@ async def execute_code(
         "'auto' uses Roslyn if Microsoft.CodeAnalysis is installed, else falls back to CodeDom. "
         "'roslyn' forces Roslyn (C# 12+). 'codedom' forces legacy CSharpCodeProvider (C# 6). Default: auto.",
     ] = "auto",
+    timeout_ms: Annotated[
+        int | None,
+        "Milliseconds this code may hold the Unity MAIN THREAD before it is interrupted and the "
+        "editor handed back. Default 20000. Pass 0 to disarm the guard for a legitimately long "
+        "job (an import, a rebuild) — the editor will then be frozen for every other session until "
+        "the code returns. Only applies to 'execute'.",
+    ] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -75,6 +82,16 @@ async def execute_code(
         params_dict["code"] = code
         params_dict["safety_checks"] = safety_checks
         params_dict["compiler"] = compiler
+        # ⛔⛔ THIS LINE IS THE WHOLE OF PONT-11, AND ITS ABSENCE MADE THE EDITOR LIE TO THE LLM.
+        # The plugin has read `timeout_ms` since PONT-06 and its own refusal message says
+        # "Raise the budget with `timeout_ms` if this was intended" — but the server never sent the
+        # parameter and never declared it, so no LLM could see it, let alone pass it. The tool was
+        # telling every caller to do something the tool made impossible: a manufactured dead end,
+        # which is this workshop's most expensive failure family (RENONCEMENT).
+        # `None` means "say nothing, let the plugin keep its default" — 0 is a MEANINGFUL value
+        # (disarm), so it must survive the None-stripping below, which it does.
+        if timeout_ms is not None:
+            params_dict["timeout_ms"] = timeout_ms
     elif action == "replay":
         if index is None:
             return {"success": False, "message": "Parameter 'index' is required for 'replay' action."}
