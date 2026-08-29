@@ -34,7 +34,10 @@ ALL_ACTIONS = SETUP_ACTIONS + CREATION_ACTIONS + CONFIGURATION_ACTIONS + EXTENSI
 @mcp_for_unity_tool(
     group="core",
     description=(
-        "Manage cameras (Unity Camera + Cinemachine). Works without Cinemachine using basic Camera; "
+        "Manage cameras AND TAKE SCREENSHOTS of the running game (Unity Camera + Cinemachine). "
+        "This is the tool for a screen capture: action='screenshot' uses the same "
+        "ScreenCapture API you would call by hand, and captures Screen Space - Overlay UI too. "
+        "Works without Cinemachine using basic Camera; "
         "unlocks presets, pipelines, and blending when Cinemachine is installed. "
         "Use ping to check Cinemachine availability.\n\n"
         "SETUP:\n"

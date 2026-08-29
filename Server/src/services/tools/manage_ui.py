@@ -24,7 +24,9 @@ _VALID_EXTENSIONS = {".uxml", ".uss"}
 @mcp_for_unity_tool(
     group="ui",
     description=(
-        "Manages Unity UI Toolkit elements (UXML documents, USS stylesheets, UIDocument components). "
+        "Manages Unity UI Toolkit elements (UXML documents, USS stylesheets, UIDocument components), "
+        "AND TAKES A SCREENSHOT OF A UI PANEL with action='render_ui' — use that rather than "
+        "calling ScreenCapture by hand when what you want to see is the interface. "
         "Read-only actions: ping, read, get_visual_tree, list. "
         "Modifying actions: create, update, delete, attach_ui_document, detach_ui_document, create_panel_settings, update_panel_settings, modify_visual_element.\n"
         "Visual actions: render_ui (captures UI panel to a PNG screenshot for self-evaluation).\n"
