@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import keyword
 import logging
 import time
 from hashlib import sha256
@@ -57,6 +58,19 @@ class ToolRegistrationResponse(BaseModel):
     registered: list[str]
     replaced: list[str]
     message: str
+
+
+def _is_usable_parameter_name(name: str) -> bool:
+    """True when `name` can become a Python function parameter.
+
+    ⛔ `str.isidentifier()` IS NOT ENOUGH, and the gap is invisible until it explodes:
+    `"class".isidentifier()` is True — it IS a lexically valid identifier — yet
+    `inspect.Parameter("class", ...)` raises `ValueError: 'class' is not a valid parameter
+    name`, because it is a RESERVED KEYWORD. Any tool declaring a parameter named `class`,
+    `from`, `import`, `lambda`, `return`, ... walked straight through the guard that was
+    meant to catch exactly this, and blew up at signature-building time instead.
+    """
+    return name.isidentifier() and not keyword.iskeyword(name)
 
 
 class CustomToolService:
@@ -319,7 +333,7 @@ class CustomToolService:
             self._register_tool(project_id, tool)
             registered.append(tool.name)
             if not self._project_scoped_tools:
-                self._register_global_tool(tool)
+                self._register_global_tool_safely(tool)
 
         if project_hash:
             self._hash_to_project[project_hash.lower()] = project_id
@@ -338,10 +352,32 @@ class CustomToolService:
                     tool.name,
                 )
                 continue
-            self._register_global_tool(tool)
+            self._register_global_tool_safely(tool)
 
     def _get_builtin_tool_names(self) -> set[str]:
         return {tool["name"] for tool in get_registered_tools()}
+
+    def _register_global_tool_safely(self, definition: ToolDefinitionModel) -> None:
+        """Register one global tool, and never let it sink the others.
+
+        ⛔ WHY THIS EXISTS. Both callers used to invoke `_register_global_tool` bare, inside a
+        loop, while the exception was caught by the CALLER — outside that loop. One malformed
+        tool therefore took every tool after it down with it, in silence, under a warning that
+        named neither the offender nor the cause ("custom tools may not be available
+        globally"). Measured 2026-08-29: a single parameter named `class` cost the whole
+        workshop its custom tooling, and the reason was only visible in a traceback below the
+        fold.
+        """
+        try:
+            self._register_global_tool(definition)
+        except Exception as exc:  # noqa: BLE001 -- one bad tool must not sink the others
+            logger.warning(
+                "Custom tool '%s' could not be registered globally (%s: %s); "
+                "the remaining tools are unaffected.",
+                definition.name,
+                type(exc).__name__,
+                exc,
+            )
 
     def _register_global_tool(self, definition: ToolDefinitionModel) -> None:
         existing = self._global_tools.get(definition.name)
@@ -414,7 +450,7 @@ class CustomToolService:
             )
         ]
         for param in definition.parameters:
-            if not param.name.isidentifier():
+            if not _is_usable_parameter_name(param.name):
                 logger.warning(
                     "Custom tool '%s' has non-identifier parameter '%s'; exposing via kwargs only.",
                     definition.name,
@@ -436,7 +472,7 @@ class CustomToolService:
     def _build_annotations(self, definition: ToolDefinitionModel) -> dict[str, object]:
         annotations: dict[str, object] = {"ctx": Context}
         for param in definition.parameters:
-            if not param.name.isidentifier():
+            if not _is_usable_parameter_name(param.name):
                 continue
             annotations[param.name] = self._map_param_type(param)
         return annotations
