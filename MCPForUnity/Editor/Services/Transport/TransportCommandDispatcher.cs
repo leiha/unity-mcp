@@ -287,12 +287,9 @@ namespace MCPForUnity.Editor.Services.Transport
 
             if (string.Equals(commandText, "ping", StringComparison.OrdinalIgnoreCase))
             {
-                var pingResponse = new
-                {
-                    status = "success",
-                    result = new { message = "pong" }
-                };
-                pending.TrySetResult(JsonConvert.SerializeObject(pingResponse));
+                // PONT-01 — every pong names the path that produced it (see StdioBridgeHost).
+                // Reaching this line means the main thread dequeued the command itself.
+                pending.TrySetResult(Transports.StdioBridgeHost.BuildPongJson("main_thread"));
                 RemovePending(id, pending);
                 return;
             }
@@ -329,12 +326,8 @@ namespace MCPForUnity.Editor.Services.Transport
 
                 if (string.Equals(command.type, "ping", StringComparison.OrdinalIgnoreCase))
                 {
-                    var pingResponse = new
-                    {
-                        status = "success",
-                        result = new { message = "pong" }
-                    };
-                    pending.TrySetResult(JsonConvert.SerializeObject(pingResponse));
+                    // PONT-01 — same contract as above, reached through the JSON form `{"type":"ping"}`.
+                    pending.TrySetResult(Transports.StdioBridgeHost.BuildPongJson("main_thread"));
                     RemovePending(id, pending);
                     return;
                 }

@@ -93,6 +93,8 @@ namespace MCPForUnity.Editor.Tools
 
             bool safetyChecks = @params["safety_checks"]?.Value<bool>() ?? true;
             string compiler = @params["compiler"]?.ToString()?.ToLowerInvariant() ?? "auto";
+            // PONT-06 — caller may widen or disable the main-thread budget (0 = no guard).
+            int budgetMs = @params["timeout_ms"]?.Value<int>() ?? DefaultBudgetMs;
 
             if (safetyChecks)
             {
@@ -104,7 +106,7 @@ namespace MCPForUnity.Editor.Tools
             try
             {
                 var startTime = DateTime.UtcNow;
-                var result = CompileAndExecute(code, compiler);
+                var result = CompileAndExecute(code, compiler, budgetMs);
                 var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
                 AddToHistory(code, result, elapsed, safetyChecks, compiler);
@@ -176,7 +178,7 @@ namespace MCPForUnity.Editor.Tools
 
         // ──────────────────── Compilation ────────────────────
 
-        private static object CompileAndExecute(string code, string compiler)
+        private static object CompileAndExecute(string code, string compiler, int budgetMs)
         {
             string wrappedSource = WrapUserCode(code);
             string[] assemblyPaths = GetAssemblyPaths();
@@ -220,10 +222,18 @@ namespace MCPForUnity.Editor.Tools
                     break;
             }
 
-            return InvokeCompiled(compiled, usedCompiler);
+            return InvokeCompiled(compiled, usedCompiler, budgetMs);
         }
 
-        private static object InvokeCompiled(Assembly assembly, string compilerUsed)
+        /// <summary>
+        /// PONT-06 — how long submitted code may hold the editor main thread before the budget
+        /// guard fires. Deliberately BELOW the bridge's own 30 s frame budget, so the caller gets a
+        /// real, named error instead of a bare "timed out" from a layer that knows nothing.
+        /// Callers may override it with `timeout_ms`; 0 disables the guard.
+        /// </summary>
+        private const int DefaultBudgetMs = 20000;
+
+        private static object InvokeCompiled(Assembly assembly, string compilerUsed, int budgetMs)
         {
             var type = assembly.GetType(WrapperClassName);
             if (type == null)
@@ -236,6 +246,35 @@ namespace MCPForUnity.Editor.Tools
             object result = null;
             Exception executionError = null;
 
+            // PONT-06 — submitted code runs on the editor MAIN thread, so code that blocks freezes
+            // the editor for every session at once. It was believed this could not be interrupted.
+            // MEASURED on the bench, both edges played:
+            //   Thread.Interrupt on the main thread DOES break a Sleep/Wait  -> 5.007 s, editor survived
+            //   it does NOT break a pure CPU loop                            -> ran the full 20.000 s
+            //   an interrupt that misses its target STAYS PENDING and hits the NEXT command — the
+            //   error then accuses an innocent caller, which is worse than the freeze it prevents.
+            //   Draining it with a short Sleep in a catch clears it: measured, next command clean.
+            var mainThread = System.Threading.Thread.CurrentThread;
+            var finished = new System.Threading.ManualResetEventSlim(false);
+            bool budgetFired = false;
+            System.Threading.Thread watchdog = null;
+
+            if (budgetMs > 0)
+            {
+                watchdog = new System.Threading.Thread(() =>
+                {
+                    if (finished.Wait(budgetMs)) return;
+                    budgetFired = true;
+                    try { mainThread.Interrupt(); } catch { /* the thread may have just ended */ }
+                })
+                {
+                    IsBackground = true,
+                    Name = "MCP execute_code budget",
+                };
+                watchdog.Start();
+            }
+
+            bool lateInterruptDrained = false;
             try
             {
                 result = method.Invoke(null, null);
@@ -248,6 +287,35 @@ namespace MCPForUnity.Editor.Tools
             {
                 executionError = e;
             }
+            finally
+            {
+                finished.Set();
+                // Drain an interrupt that arrived too late to hit its target. Without this, it
+                // detonates inside whatever the main thread waits on NEXT.
+                try { System.Threading.Thread.Sleep(1); }
+                catch (System.Threading.ThreadInterruptedException) { lateInterruptDrained = true; }
+                finished.Dispose();
+            }
+
+            if (budgetFired && executionError is System.Threading.ThreadInterruptedException)
+                return new ErrorResponse(
+                    $"Code held the editor main thread past its {budgetMs} ms budget and was interrupted. "
+                  + "The editor is free again. Raise the budget with `timeout_ms` if this was intended.",
+                    new { budgetMs, interrupted = true, compiler = compilerUsed });
+
+            if (budgetFired)
+                return new ErrorResponse(
+                    $"Code held the editor main thread past its {budgetMs} ms budget and COULD NOT be "
+                  + "interrupted — it never waits, so it is a CPU loop. It ran to completion and the "
+                  + "editor was frozen for every session for the whole time. Do not submit unbounded loops.",
+                    new
+                    {
+                        budgetMs,
+                        interrupted = false,
+                        lateInterruptDrained,
+                        ranToCompletion = executionError == null,
+                        compiler = compilerUsed,
+                    });
 
             if (executionError != null)
                 return new ErrorResponse($"Runtime error: {executionError.Message}",
@@ -509,17 +577,99 @@ namespace MCPForUnity.Editor.Tools
             _isAvailable = null;
         }
 
+        // PONT-02 — assemblies preloaded from the editor installation, kept so type lookup does
+        // not have to go through Type.GetType (which only searches the default load context).
+        private static readonly Dictionary<string, Assembly> _preloaded =
+            new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// PONT-02 — Roslyn ships INSIDE the editor installation but is not loaded in the editor
+        /// domain, so `Type.GetType` finds nothing and every execute_code call silently falls back
+        /// to CodeDom. CodeDom shells out to Mono's `mcs`, which is an older C# and blocks the main
+        /// thread for the whole compile: measured on an EMPTY project, `return 2+2;` took 12.720 s
+        /// and a local function was rejected outright. Loading these four files turns that fallback
+        /// off. Best effort: if anything is missing we leave Roslyn unavailable and CodeDom keeps
+        /// working exactly as before.
+        /// </summary>
+        private static void PreloadRoslynFromEditorInstallation()
+        {
+            string contents;
+            try { contents = UnityEditor.EditorApplication.applicationContentsPath; }
+            catch { return; }
+            if (string.IsNullOrEmpty(contents)) return;
+
+            string directory = Path.Combine(contents, "MonoBleedingEdge", "lib", "mono", "4.5");
+            if (!Directory.Exists(directory)) return;
+
+            // Dependencies first: Roslyn will not load without them.
+            string[] fileNames =
+            {
+                "System.Collections.Immutable.dll",
+                "System.Reflection.Metadata.dll",
+                "Microsoft.CodeAnalysis.dll",
+                "Microsoft.CodeAnalysis.CSharp.dll",
+            };
+
+            foreach (var fileName in fileNames)
+            {
+                try
+                {
+                    string path = Path.Combine(directory, fileName);
+                    if (!File.Exists(path)) continue;
+                    var assembly = Assembly.LoadFrom(path);
+                    if (assembly != null)
+                        _preloaded[assembly.GetName().Name] = assembly;
+                }
+                catch (Exception e)
+                {
+                    McpLog.Warn($"[ExecuteCode] Could not preload {fileName}: {e.Message}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// PONT-02 — resolve a type by full name, looking in the default context first, then in the
+        /// assemblies we preloaded, then in whatever the domain already holds.
+        /// </summary>
+        private static Type ResolveType(string fullName, string assemblySimpleName)
+        {
+            var type = Type.GetType($"{fullName}, {assemblySimpleName}");
+            if (type != null) return type;
+
+            if (_preloaded.TryGetValue(assemblySimpleName, out var preloaded))
+            {
+                type = preloaded.GetType(fullName);
+                if (type != null) return type;
+            }
+
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                try
+                {
+                    if (!string.Equals(assembly.GetName().Name, assemblySimpleName, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    type = assembly.GetType(fullName);
+                    if (type != null) return type;
+                }
+                catch { /* an assembly that cannot be inspected is not the one we want */ }
+            }
+
+            return null;
+        }
+
         private static bool Initialize()
         {
             try
             {
-                _syntaxTreeType = Type.GetType("Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree, Microsoft.CodeAnalysis.CSharp");
-                _compilationType = Type.GetType("Microsoft.CodeAnalysis.CSharp.CSharpCompilation, Microsoft.CodeAnalysis.CSharp");
-                _compilationOptionsType = Type.GetType("Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions, Microsoft.CodeAnalysis.CSharp");
-                _parseOptionsType = Type.GetType("Microsoft.CodeAnalysis.CSharp.CSharpParseOptions, Microsoft.CodeAnalysis.CSharp");
-                _metadataReferenceType = Type.GetType("Microsoft.CodeAnalysis.MetadataReference, Microsoft.CodeAnalysis");
-                _outputKindEnum = Type.GetType("Microsoft.CodeAnalysis.OutputKind, Microsoft.CodeAnalysis");
-                _languageVersionEnum = Type.GetType("Microsoft.CodeAnalysis.CSharp.LanguageVersion, Microsoft.CodeAnalysis.CSharp");
+                PreloadRoslynFromEditorInstallation();
+
+                _syntaxTreeType = ResolveType("Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree", "Microsoft.CodeAnalysis.CSharp");
+                _compilationType = ResolveType("Microsoft.CodeAnalysis.CSharp.CSharpCompilation", "Microsoft.CodeAnalysis.CSharp");
+                _compilationOptionsType = ResolveType("Microsoft.CodeAnalysis.CSharp.CSharpCompilationOptions", "Microsoft.CodeAnalysis.CSharp");
+                _parseOptionsType = ResolveType("Microsoft.CodeAnalysis.CSharp.CSharpParseOptions", "Microsoft.CodeAnalysis.CSharp");
+                _metadataReferenceType = ResolveType("Microsoft.CodeAnalysis.MetadataReference", "Microsoft.CodeAnalysis");
+                _outputKindEnum = ResolveType("Microsoft.CodeAnalysis.OutputKind", "Microsoft.CodeAnalysis");
+                _languageVersionEnum = ResolveType("Microsoft.CodeAnalysis.CSharp.LanguageVersion", "Microsoft.CodeAnalysis.CSharp");
 
                 if (_syntaxTreeType == null || _compilationType == null || _compilationOptionsType == null ||
                     _parseOptionsType == null || _metadataReferenceType == null || _outputKindEnum == null ||
@@ -527,7 +677,7 @@ namespace MCPForUnity.Editor.Tools
                     return false;
 
                 // CSharpSyntaxTree.ParseText(string, CSharpParseOptions, string, Encoding, CancellationToken)
-                var syntaxTreeBase = Type.GetType("Microsoft.CodeAnalysis.SyntaxTree, Microsoft.CodeAnalysis");
+                var syntaxTreeBase = ResolveType("Microsoft.CodeAnalysis.SyntaxTree", "Microsoft.CodeAnalysis");
                 _parseText = _syntaxTreeType.GetMethod("ParseText", new[] { typeof(string), _parseOptionsType, typeof(string), typeof(Encoding), typeof(System.Threading.CancellationToken) });
                 if (_parseText == null)
                     return false;
@@ -548,7 +698,7 @@ namespace MCPForUnity.Editor.Tools
 
                 // Emit has no single-param overload; the simplest is
                 // Emit(Stream, Stream, Stream, Stream, IEnumerable<ResourceDescription>, EmitOptions, CancellationToken)
-                var compilationBase = Type.GetType("Microsoft.CodeAnalysis.Compilation, Microsoft.CodeAnalysis");
+                var compilationBase = ResolveType("Microsoft.CodeAnalysis.Compilation", "Microsoft.CodeAnalysis");
                 if (compilationBase == null) return false;
                 _emit = compilationBase.GetMethods(BindingFlags.Public | BindingFlags.Instance)
                     .Where(m => m.Name == "Emit")
@@ -631,7 +781,7 @@ namespace MCPForUnity.Editor.Tools
                 }
 
                 // Build syntax tree array
-                var syntaxTreeBase = Type.GetType("Microsoft.CodeAnalysis.SyntaxTree, Microsoft.CodeAnalysis");
+                var syntaxTreeBase = ResolveType("Microsoft.CodeAnalysis.SyntaxTree", "Microsoft.CodeAnalysis");
                 var treeArray = Array.CreateInstance(syntaxTreeBase, 1);
                 treeArray.SetValue(syntaxTree, 0);
 
@@ -663,7 +813,7 @@ namespace MCPForUnity.Editor.Tools
                         // Read emitResult.Diagnostics
                         var diagProp = emitResult.GetType().GetProperty("Diagnostics");
                         var diagnostics = (System.Collections.IEnumerable)diagProp.GetValue(emitResult);
-                        var severityError = Enum.Parse(Type.GetType("Microsoft.CodeAnalysis.DiagnosticSeverity, Microsoft.CodeAnalysis"), "Error");
+                        var severityError = Enum.Parse(ResolveType("Microsoft.CodeAnalysis.DiagnosticSeverity", "Microsoft.CodeAnalysis"), "Error");
 
                         foreach (var diag in diagnostics)
                         {

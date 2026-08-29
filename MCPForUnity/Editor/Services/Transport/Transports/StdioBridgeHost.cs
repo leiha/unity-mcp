@@ -63,6 +63,65 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         private static volatile int _consecutiveTimeouts = 0;
         private static bool _processCommandsHooked = false;
 
+        // PONT-01 — the bridge must never lie about being alive.
+        //
+        // `ping` has TWO answering paths: a shortcut on the socket thread (which never touches the
+        // editor) and a real one inside the queue. When the main thread is frozen, the shortcut
+        // still answers `pong` in milliseconds, so a caller cannot tell a healthy editor from a
+        // frozen one — five sessions repaired the wrong object because of exactly this.
+        //
+        // The fix is not to remove a path: it is to make every answer NAME which path produced it
+        // and how long the main thread has been silent. Written by the main thread on every editor
+        // tick, read by the socket thread.
+        private static long _lastMainThreadTickMs = -1;
+
+        // A main thread that has not ticked for this long is not pumping commands.
+        internal const long MainThreadStallThresholdMs = 2000;
+
+        /// <summary>Milliseconds since the editor main thread last ticked, or -1 if it never did.</summary>
+        internal static long MainThreadIdleMs
+        {
+            get
+            {
+                long last = Interlocked.Read(ref _lastMainThreadTickMs);
+                return last < 0 ? -1 : _uptime.ElapsedMilliseconds - last;
+            }
+        }
+
+        /// <summary>
+        /// PONT-03 — true when the peer has closed its end. A socket whose peer is gone becomes
+        /// readable with zero bytes available; a live idle socket is simply not readable.
+        /// A socket that hangs without closing is NOT reported here: that one is the read
+        /// timeout's job, on its own connection thread.
+        /// </summary>
+        private static bool IsPeerGone(TcpClient candidate)
+        {
+            try
+            {
+                var socket = candidate?.Client;
+                if (socket == null) return true;
+                if (!candidate.Connected) return true;
+                return socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0;
+            }
+            catch
+            {
+                // A socket we cannot even inspect is not one we should keep.
+                return true;
+            }
+        }
+
+        /// <summary>The `result` payload of a pong, naming which path answered and the main thread state.</summary>
+        internal static string BuildPongJson(string answeringPath)
+        {
+            long idle = MainThreadIdleMs;
+            bool pumping = idle >= 0 && idle < MainThreadStallThresholdMs;
+            return "{\"status\":\"success\",\"result\":{\"message\":\"pong\""
+                 + ",\"answered_by\":\"" + answeringPath + "\""
+                 + ",\"main_thread_idle_ms\":" + idle.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                 + ",\"main_thread_pumping\":" + (pumping ? "true" : "false")
+                 + "}}";
+        }
+
         private static void IoInfo(string s) { McpLog.Info(s, always: false); }
 
         private static bool IsDebugEnabled()
@@ -546,17 +605,25 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                         return;
                     }
 
-                    // In stdio transport there is only ever one active Python server.
-                    // A new connection means the old one is dead — close stale clients so
-                    // their hung ReadFrameAsUtf8Async calls throw and exit cleanly.
+                    // PONT-03 — this used to close EVERY other client on every new connection, on
+                    // the premise that "in stdio transport there is only ever one active Python
+                    // server". That premise is false here: nine Claude sessions run their own MCP
+                    // server against the same editor, so each session that spoke to Unity severed
+                    // the others mid-command. The victim reads `bridge closed after 0/8 bytes` or
+                    // `Broken pipe` and believes its command failed, while the command is in fact
+                    // still running — measured on the bench, both edges played.
+                    //
+                    // A genuinely dead peer still gets collected: a socket the peer has closed is
+                    // readable with nothing to read, and one that hangs is dropped by the read
+                    // timeout on its own thread. Only that first case is closed here.
                     TcpClient[] staleClients;
                     lock (clientsLock)
                     {
-                        staleClients = activeClients.Where(c => c != client).ToArray();
+                        staleClients = activeClients.Where(c => c != client && IsPeerGone(c)).ToArray();
                     }
                     if (staleClients.Length > 0)
                     {
-                        McpLog.Info($"Closing {staleClients.Length} stale client(s) after new connection", always: false);
+                        McpLog.Info($"Closing {staleClients.Length} disconnected client(s) after new connection", always: false);
                         foreach (var stale in staleClients)
                         {
                             try { stale.Close(); } catch { }
@@ -583,8 +650,9 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
                             if (commandText.Trim() == "ping")
                             {
+                                // PONT-01 — this answer never reaches the editor, so it says so.
                                 byte[] pingResponseBytes = System.Text.Encoding.UTF8.GetBytes(
-                                    "{\"status\":\"success\",\"result\":{\"message\":\"pong\"}}"
+                                    BuildPongJson("socket_thread")
                                 );
                                 await WriteFrameAsync(stream, pingResponseBytes);
                                 continue;
@@ -620,11 +688,62 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                                 else
                                 {
                                     int timeouts = Interlocked.Increment(ref _consecutiveTimeouts);
-                                    McpLog.Warn($"Command TCS timed out ({timeouts} consecutive)");
+
+                                    // PONT-04 — a command that timed out used to stay in the queue
+                                    // with IsExecuting=false, and the eviction sweep only ever looks
+                                    // at IsExecuting=true entries. So it was never dropped: it ran
+                                    // later, whenever the main thread came back, AFTER its caller had
+                                    // been told it failed. That is where "a Timeout is not a
+                                    // non-execution" comes from, and why a caller who retries gets
+                                    // the effect TWICE.
+                                    //
+                                    // A command that never started can still be withdrawn. One that
+                                    // is already running cannot — there is no cancellation anywhere
+                                    // in this plugin — so the answer must SAY which of the two it is
+                                    // instead of reporting the same "timed out" for both.
+                                    bool alreadyRunning;
+                                    lock (lockObj)
+                                    {
+                                        if (commandQueue.TryGetValue(commandId, out var pendingCommand)
+                                            && !pendingCommand.IsExecuting)
+                                        {
+                                            commandQueue.Remove(commandId);
+                                            alreadyRunning = false;
+                                        }
+                                        else
+                                        {
+                                            alreadyRunning = true;
+                                        }
+                                    }
+
+                                    McpLog.Warn($"Command TCS timed out ({timeouts} consecutive), "
+                                              + (alreadyRunning ? "already running: NOT withdrawn"
+                                                                : "never started: withdrawn"));
+
+                                    // PONT-05 — say WHY it timed out, not just that it did. A main
+                                    // thread that has been silent for tens of seconds is holding up
+                                    // every session at once, and the caller has no other way to know
+                                    // that the fault is not in its own command. Five sessions have
+                                    // already repaired the wrong object for want of this number.
+                                    long idleMs = MainThreadIdleMs;
+                                    string cause = idleMs >= MainThreadStallThresholdMs
+                                        ? $" The editor main thread has been silent for {idleMs} ms: "
+                                          + "something else is holding it, and every session is affected."
+                                        : " The editor main thread is running: the delay is in this command itself.";
+
                                     var timeoutResponse = new
                                     {
                                         status = "error",
-                                        error = $"Command processing timed out after {FrameIOTimeoutMs} ms",
+                                        error = (alreadyRunning
+                                            ? $"Command processing timed out after {FrameIOTimeoutMs} ms. "
+                                              + "It had already started and is STILL RUNNING: do not retry, "
+                                              + "its effects will land."
+                                            : $"Command processing timed out after {FrameIOTimeoutMs} ms. "
+                                              + "It never started and has been withdrawn: it will not run.")
+                                            + cause,
+                                        started = alreadyRunning,
+                                        withdrawn = !alreadyRunning,
+                                        main_thread_idle_ms = idleMs,
                                     };
                                     response = JsonConvert.SerializeObject(timeoutResponse);
                                 }
@@ -817,6 +936,10 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
         private static void ProcessCommands()
         {
+            // PONT-01 — stamped before EVERY early return: this is the proof that the editor main
+            // thread is still ticking, and it must not depend on the bridge having work to do.
+            Interlocked.Exchange(ref _lastMainThreadTickMs, _uptime.ElapsedMilliseconds);
+
             if (!isRunning) return;
             if (Interlocked.Exchange(ref processingCommands, 1) == 1) return;
             try
@@ -893,12 +1016,8 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                     commandText = commandText.Trim();
                     if (commandText == "ping")
                     {
-                        var pingResponse = new
-                        {
-                            status = "success",
-                            result = new { message = "pong" },
-                        };
-                        tcs.SetResult(JsonConvert.SerializeObject(pingResponse));
+                        // PONT-01 — reaching this line IS the proof the main thread pumps.
+                        tcs.SetResult(BuildPongJson("main_thread"));
                         lock (lockObj) { commandQueue.Remove(id); }
                         continue;
                     }
