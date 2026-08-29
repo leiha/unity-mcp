@@ -1,5 +1,14 @@
 # CLAUDE.md
 
+> ⛔⛔ **ARRÊTE-TOI ICI ET LIS D'ABORD [`CLAUDE.energeia.md`](CLAUDE.energeia.md).**
+> **Ce dépôt est un FORK — `leiha/unity-mcp`, branche `energeia`.** Le fichier ci-dessous est
+> celui de l'amont, conservé **intact exprès** : il reste vrai sur l'architecture, les patterns
+> et l'exigence de tests. Il est **faux sur une seule chose, et elle est décisive** — son
+> §*What Not To Do* prescrit *« branch off `beta` for PRs »*, or **le PO a rejeté nommément la
+> remontée de nos correctifs chez l'amont, le 2026-08-29.** Notre branche ne remonte nulle part.
+> ⚠ Et le skill `mcp-source` livré ici sait rebasculer le paquet sur `main`/`beta` : **l'employer
+> annulerait le fork en une commande.**
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What This Project Is
