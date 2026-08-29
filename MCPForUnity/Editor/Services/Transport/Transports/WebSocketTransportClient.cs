@@ -291,8 +291,28 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
             if (connectedEndpoint == null)
             {
+                // ⛔⛔ A RETRY THAT IS ABOUT TO SUCCEED MUST NOT BE LOGGED AS AN ERROR.
+                // Measured 2026-08-29 on the energeia editor: restarting the shared server six
+                // times left 24 red "Connection failed. Check that the server URL is correct, the
+                // server is running, and your API key is valid." in the console -- and ZERO trace
+                // of the reconnection that landed about four seconds after each one. Every one of
+                // those lines sent the reader to inspect a URL, a server and a key that were all
+                // fine. This project has already lost three generations of sessions to "the bridge
+                // is dead" when the bridge was merely reconnecting.
+                // ⇒ while the reconnect schedule is still running, this is a WARNING that says so.
+                //   It only becomes an error once nobody is retrying any more.
+                string detail = lastConnectError?.Message ?? "Unknown error";
+                bool retrying = Volatile.Read(ref _isReconnectingFlag) != 0;
+                if (retrying)
+                {
+                    string waitMsg = "Server did not answer yet; the reconnect schedule is still running. This is expected for a few seconds after the shared server restarts -- no action needed unless it keeps repeating.";
+                    McpLog.Warn($"[WebSocket] {waitMsg} (Detail: {detail})");
+                    _state = TransportState.Disconnected(TransportDisplayName, waitMsg);
+                    return false;
+                }
+
                 string errorMsg = "Connection failed. Check that the server URL is correct, the server is running, and your API key (if required) is valid.";
-                McpLog.Error($"[WebSocket] {errorMsg} (Detail: {lastConnectError?.Message ?? "Unknown error"})");
+                McpLog.Error($"[WebSocket] {errorMsg} (Detail: {detail})");
                 _state = TransportState.Disconnected(TransportDisplayName, errorMsg);
                 return false;
             }
@@ -790,7 +810,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                     {
                         _state = TransportState.Connected(TransportDisplayName, sessionId: _sessionId, details: _endpointUri.ToString());
                         _isConnected = true;
-                        McpLog.Info("[WebSocket] Reconnected to MCP server", false);
+                        McpLog.Info("[WebSocket] Reconnected to MCP server");
                         return;
                     }
                 }
@@ -808,7 +828,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                     {
                         _state = TransportState.Connected(TransportDisplayName, sessionId: _sessionId, details: _endpointUri.ToString());
                         _isConnected = true;
-                        McpLog.Info("[WebSocket] Reconnected to MCP server", false);
+                        McpLog.Info("[WebSocket] Reconnected to MCP server");
                         return;
                     }
                 }
