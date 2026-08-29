@@ -93,12 +93,12 @@ async def apply_text_edits(
     ctx: Context,
     uri: Annotated[str, "URI of the script to edit under Assets/ directory, mcpforunity://path/Assets/... or file://... or Assets/..."],
     edits: Annotated[list[dict[str, Any]], "List of edits to apply to the script, i.e. a list of {startLine,startCol,endLine,endCol,newText} (1-indexed!)"],
-    precondition_sha256: Annotated[str,
-                                   "Optional SHA256 of the script to edit, used to prevent concurrent edits"] | None = None,
-    strict: Annotated[bool,
-                      "Optional strict flag, used to enforce strict mode"] | None = None,
-    options: Annotated[dict[str, Any],
-                       "Optional options, used to pass additional options to the script editor"] | None = None,
+    precondition_sha256: Annotated[str | None,
+                                   "Optional SHA256 of the script to edit, used to prevent concurrent edits"] = None,
+    strict: Annotated[bool | None,
+                      "Optional strict flag, used to enforce strict mode"] = None,
+    options: Annotated[dict[str, Any] | None,
+                       "Optional options, used to pass additional options to the script editor"] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
     await ctx.info(
@@ -393,8 +393,8 @@ async def create_script(
     ctx: Context,
     path: Annotated[str, "Path under Assets/ to create the script at, e.g., 'Assets/Scripts/My.cs'"],
     contents: Annotated[str, "Contents of the script to create (plain text C# code). The server handles Base64 encoding."],
-    script_type: Annotated[str, "Script type (e.g., 'C#')"] | None = None,
-    namespace: Annotated[str, "Namespace for the script"] | None = None,
+    script_type: Annotated[str | None, "Script type (e.g., 'C#')"] = None,
+    namespace: Annotated[str | None, "Namespace for the script"] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
     await ctx.info(
@@ -532,13 +532,13 @@ async def validate_script(
 async def manage_script(
     ctx: Context,
     action: Annotated[Literal['create', 'read', 'delete'], "Perform CRUD operations on C# scripts."],
-    name: Annotated[str, "Script name (no .cs extension)", "Name of the script to create"],
-    path: Annotated[str, "Asset path (default: 'Assets/')", "Path under Assets/ to create the script at, e.g., 'Assets/Scripts/My.cs'"],
-    contents: Annotated[str, "Contents of the script to create",
-                        "C# code for 'create' action"] | None = None,
-    script_type: Annotated[str, "Script type (e.g., 'C#')",
-                           "Type hint (e.g., 'MonoBehaviour')"] | None = None,
-    namespace: Annotated[str, "Namespace for the script"] | None = None,
+    name: Annotated[str, "Script name (no .cs extension) — the script to create."],
+    path: Annotated[str, "Asset path under Assets/ (default: 'Assets/'), e.g. 'Assets/Scripts/My.cs'."],
+    contents: Annotated[str | None,
+                        "Contents of the script to create — plain C# code, for the 'create' action."] = None,
+    script_type: Annotated[str | None,
+                           "Script type hint, e.g. 'C#' or 'MonoBehaviour'."] = None,
+    namespace: Annotated[str | None, "Namespace for the script"] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
     await ctx.info(

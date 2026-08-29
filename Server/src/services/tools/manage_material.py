@@ -34,32 +34,32 @@ async def manage_material(
     ], "Action to perform."],
 
     # Common / Shared
-    material_path: Annotated[str,
-                             "Path to material asset (Assets/...)"] | None = None,
-    property: Annotated[str,
-                        "Shader property name (e.g., _BaseColor, _MainTex)"] | None = None,
+    material_path: Annotated[str | None,
+                             "Path to material asset (Assets/...)"] = None,
+    property: Annotated[str | None,
+                        "Shader property name (e.g., _BaseColor, _MainTex)"] = None,
 
     # create
-    shader: Annotated[str, "Shader name (default: Standard)"] | None = None,
-    properties: Annotated[dict[str, Any] | str,
-                          "Initial properties to set as {name: value} dict."] | None = None,
+    shader: Annotated[str | None, "Shader name (default: Standard)"] = None,
+    properties: Annotated[dict[str, Any] | str | None,
+                          "Initial properties to set as {name: value} dict."] = None,
 
     # set_material_shader_property
     value: Annotated[list | float | int | str | bool | None,
-                     "Value to set (color array, float, texture path/instruction)"] | None = None,
+                     "Value to set (color array, float, texture path/instruction)"] = None,
 
     # set_material_color / set_renderer_color
-    color: Annotated[list[float] | dict[str, float] | str,
-                     "Color as [r, g, b] or [r, g, b, a] array, {r, g, b, a} object, or JSON string."] | None = None,
+    color: Annotated[list[float] | dict[str, float] | str | None,
+                     "Color as [r, g, b] or [r, g, b, a] array, {r, g, b, a} object, or JSON string."] = None,
 
     # assign_material_to_renderer / set_renderer_color
-    target: Annotated[str,
-                      "Target GameObject (name, path, or find instruction)"] | None = None,
+    target: Annotated[str | None,
+                      "Target GameObject (name, path, or find instruction)"] = None,
     search_method: Annotated[Literal["by_id", "by_name", "by_path", "by_tag",
-                                     "by_layer", "by_component"], "Search method for target"] | None = None,
-    slot: Annotated[int, "Material slot index (0-based)"] | None = None,
-    mode: Annotated[Literal["shared", "instance", "property_block", "create_unique"],
-                    "Assignment/modification mode; behavior when omitted is action-specific on the Unity side."] | None = None,
+                                     "by_layer", "by_component"] | None, "Search method for target"] = None,
+    slot: Annotated[int | None, "Material slot index (0-based)"] = None,
+    mode: Annotated[Literal["shared", "instance", "property_block", "create_unique"] | None,
+                    "Assignment/modification mode; behavior when omitted is action-specific on the Unity side."] = None,
 
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)

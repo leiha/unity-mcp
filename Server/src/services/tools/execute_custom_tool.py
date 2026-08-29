@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import Context
 from mcp.types import ToolAnnotations
@@ -23,7 +23,19 @@ from services.tools import get_unity_instance_from_context
         destructiveHint=True,
     ),
 )
-async def execute_custom_tool(ctx: Context, tool_name: str, parameters: dict[str, Any] | None = None) -> MCPResponse:
+async def execute_custom_tool(
+    ctx: Context,
+    tool_name: Annotated[
+        str,
+        "Name of the project's custom tool to run, as Unity registered it "
+        "(the `[McpForUnityTool]` name, e.g. 'ui_find').",
+    ],
+    parameters: Annotated[
+        dict[str, Any] | None,
+        "Arguments for that tool, as a JSON object keyed by parameter name. "
+        "Omit it for a tool that takes none.",
+    ] = None,
+) -> MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
     if not unity_instance:
         return MCPResponse(

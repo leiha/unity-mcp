@@ -400,58 +400,58 @@ async def manage_texture(
     ], "Action to perform."],
 
     # Required for most actions
-    path: Annotated[str,
-                    "Output texture path (e.g., 'Assets/Textures/MyTexture.png')"] | None = None,
+    path: Annotated[str | None,
+                    "Output texture path (e.g., 'Assets/Textures/MyTexture.png')"] = None,
 
     # Dimensions (defaults to 64x64)
-    width: Annotated[int, "Texture width in pixels (default: 64)"] | None = None,
-    height: Annotated[int, "Texture height in pixels (default: 64)"] | None = None,
+    width: Annotated[int | None, "Texture width in pixels (default: 64)"] = None,
+    height: Annotated[int | None, "Texture height in pixels (default: 64)"] = None,
 
     # Solid fill (accepts both 0-255 integers and 0.0-1.0 normalized floats)
-    fill_color: Annotated[list[int | float] | dict[str, int | float] | str,
-                          "Fill color as [r, g, b] or [r, g, b, a] array, {r, g, b, a} object, or hex string. Accepts both 0-255 range (e.g., [255, 0, 0]) or 0.0-1.0 normalized range (e.g., [1.0, 0, 0])"] | None = None,
+    fill_color: Annotated[list[int | float] | dict[str, int | float] | str | None,
+                          "Fill color as [r, g, b] or [r, g, b, a] array, {r, g, b, a} object, or hex string. Accepts both 0-255 range (e.g., [255, 0, 0]) or 0.0-1.0 normalized range (e.g., [1.0, 0, 0])"] = None,
 
     # Pattern-based generation
     pattern: Annotated[Literal[
         "checkerboard", "stripes", "stripes_h", "stripes_v", "stripes_diag",
         "dots", "grid", "brick"
-    ], "Pattern type for apply_pattern action"] | None = None,
+    ] | None, "Pattern type for apply_pattern action"] = None,
 
-    palette: Annotated[list[list[int | float]] | str,
-                       "Color palette as [[r,g,b,a], ...]. Accepts both 0-255 range or 0.0-1.0 normalized range"] | None = None,
+    palette: Annotated[list[list[int | float]] | str | None,
+                       "Color palette as [[r,g,b,a], ...]. Accepts both 0-255 range or 0.0-1.0 normalized range"] = None,
 
-    pattern_size: Annotated[int,
-                            "Pattern cell size in pixels (default: 8)"] | None = None,
+    pattern_size: Annotated[int | None,
+                            "Pattern cell size in pixels (default: 8)"] = None,
 
     # Direct pixel data
-    pixels: Annotated[list[list[int]] | str,
-                      "Pixel data as JSON array of [r,g,b,a] values or base64 string"] | None = None,
+    pixels: Annotated[list[list[int]] | str | None,
+                      "Pixel data as JSON array of [r,g,b,a] values or base64 string"] = None,
 
-    image_path: Annotated[str,
-                          "Source image file path for create/create_sprite (PNG/JPG)."] | None = None,
+    image_path: Annotated[str | None,
+                          "Source image file path for create/create_sprite (PNG/JPG)."] = None,
 
     # Gradient settings
-    gradient_type: Annotated[Literal["linear", "radial"],
-                             "Gradient type (default: linear)"] | None = None,
-    gradient_angle: Annotated[float,
-                              "Gradient angle in degrees for linear gradient (default: 0)"] | None = None,
+    gradient_type: Annotated[Literal["linear", "radial"] | None,
+                             "Gradient type (default: linear)"] = None,
+    gradient_angle: Annotated[float | None,
+                              "Gradient angle in degrees for linear gradient (default: 0)"] = None,
 
     # Noise settings
-    noise_scale: Annotated[float,
-                           "Noise scale/frequency (default: 0.1)"] | None = None,
-    octaves: Annotated[int,
-                       "Number of noise octaves for detail (default: 1)"] | None = None,
+    noise_scale: Annotated[float | None,
+                           "Noise scale/frequency (default: 0.1)"] = None,
+    octaves: Annotated[int | None,
+                       "Number of noise octaves for detail (default: 1)"] = None,
 
     # Modify action
-    set_pixels: Annotated[dict,
-                          "Region to modify: {x, y, width, height, color or pixels}"] | None = None,
+    set_pixels: Annotated[dict | None,
+                          "Region to modify: {x, y, width, height, color or pixels}"] = None,
 
     # Sprite creation (legacy, prefer import_settings)
-    as_sprite: Annotated[dict | bool,
-                         "Configure as sprite: {pivot: [x,y], pixels_per_unit: 100} or true for defaults"] | None = None,
+    as_sprite: Annotated[dict | bool | None,
+                         "Configure as sprite: {pivot: [x,y], pixels_per_unit: 100} or true for defaults"] = None,
 
     # TextureImporter settings
-    import_settings: Annotated[dict,
+    import_settings: Annotated[dict | None,
         "TextureImporter settings dict. Keys: texture_type (default/normal_map/sprite/etc), "
         "texture_shape (2d/cube), srgb (bool), alpha_source (none/from_input/from_gray_scale), "
         "alpha_is_transparency (bool), readable (bool), generate_mipmaps (bool), "
@@ -459,7 +459,7 @@ async def manage_texture(
         "filter_mode (point/bilinear/trilinear), aniso_level (0-16), max_texture_size (32-16384), "
         "compression (none/low_quality/normal_quality/high_quality), compression_quality (0-100), "
         "sprite_mode (single/multiple/polygon), sprite_pixels_per_unit, sprite_pivot, "
-        "sprite_mesh_type (full_rect/tight), sprite_extrude (0-32)"] | None = None,
+        "sprite_mesh_type (full_rect/tight), sprite_extrude (0-32)"] = None,
 
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)

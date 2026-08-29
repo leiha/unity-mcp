@@ -9,8 +9,21 @@ serves for every parameter of every tool::
     di_state        3 parameters, 0 with a description     <- ours
     trace           3 parameters, 0 with a description     <- ours
 
-Every custom tool loses ALL of them, and the built-ins keep theirs -- so the failure is in the
-custom-tool path alone. The Unity side is not at fault: `ToolDiscoveryService.cs` copies
+Every custom tool loses ALL of them, so the failure described below is real and this file's repair
+holds.
+
+⛔⛔ BUT THE SECOND HALF OF THAT SENTENCE WAS FALSE, AND IT SAT HERE FOR A DAY. It used to read
+"and the built-ins keep theirs -- so the failure is in the custom-tool path alone". The two numbers
+printed right above it said otherwise: 19 parameters and ONE description is not a tool keeping its
+descriptions, it is a tool that has lost eighteen. Measured 2026-08-29 ~23:0x on the running server
+by titulaire 6 (session 9fd89ce4): 158 of 428 built-in parameters (36.9 %) reached the LLM with no
+description at all, over 17 of 46 tools -- `manage_gameobject` 27 of 27, `read_console` 8 of 8.
+⭐ The lesson is not carelessness, it is ORDER: the sentence named the custom path first, and the
+built-in numbers sitting one line above were read as its contrast rather than as a second defect.
+⇒ the built-in half is now guarded by `tests/test_builtin_tool_parameter_descriptions.py` (PONT-12),
+  which carries the cause and its ratchet. THIS file remains about the custom path only.
+
+The Unity side is not at fault: `ToolDiscoveryService.cs` copies
 `paramAttr.Description` into the payload, and `ToolParameterModel` has a `description` field that
 arrives populated. It is thrown away here, in `_build_signature` and `_build_annotations`, which
 annotate each parameter with its bare TYPE and nothing else.

@@ -729,12 +729,12 @@ async def script_apply_edits(
     name: Annotated[str, "Name of the script to edit"],
     path: Annotated[str, "Path to the script to edit under Assets/ directory"],
     edits: Annotated[Union[list[dict[str, Any]], str], "List of edits to apply to the script (JSON list or stringified JSON)"],
-    options: Annotated[dict[str, Any],
-                       "Options for the script edit"] | None = None,
+    options: Annotated[dict[str, Any] | None,
+                       "Options for the script edit"] = None,
     script_type: Annotated[str,
                            "Type of the script to edit"] = "MonoBehaviour",
-    namespace: Annotated[str,
-                         "Namespace of the script to edit"] | None = None,
+    namespace: Annotated[str | None,
+                         "Namespace of the script to edit"] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
     await ctx.info(

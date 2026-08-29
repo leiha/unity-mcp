@@ -18,12 +18,12 @@ from transport.legacy.unity_connection import async_send_command_with_retry
 async def manage_editor(
     ctx: Context,
     action: Annotated[Literal["telemetry_status", "telemetry_ping", "play", "pause", "stop", "set_active_tool", "add_tag", "remove_tag", "add_layer", "remove_layer", "deploy_package", "restore_package", "undo", "redo"], "Get and update the Unity Editor state. deploy_package copies the configured MCPForUnity source into the project's package location (triggers recompile). restore_package reverts the last deployment from backup. undo/redo perform editor undo/redo. For prefab editing (open/save/close prefab stage), use manage_prefabs."],
-    tool_name: Annotated[str,
-                         "Tool name when setting active tool"] | None = None,
-    tag_name: Annotated[str,
-                        "Tag name when adding and removing tags"] | None = None,
-    layer_name: Annotated[str,
-                          "Layer name when adding and removing layers"] | None = None,
+    tool_name: Annotated[str | None,
+                         "Tool name when setting active tool"] = None,
+    tag_name: Annotated[str | None,
+                        "Tag name when adding and removing tags"] = None,
+    layer_name: Annotated[str | None,
+                          "Layer name when adding and removing layers"] = None,
 ) -> dict[str, Any]:
     # Get active instance from request state (injected by middleware)
     unity_instance = await get_unity_instance_from_context(ctx)

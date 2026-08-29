@@ -24,8 +24,8 @@ async def manage_shader(
     action: Annotated[Literal['create', 'read', 'update', 'delete'], "Perform CRUD operations on shader scripts."],
     name: Annotated[str, "Shader name (no .cs extension)"],
     path: Annotated[str, "Asset path (default: \"Assets/\")"],
-    contents: Annotated[str,
-                        "Shader code for 'create'/'update'"] | None = None,
+    contents: Annotated[str | None,
+                        "Shader code for 'create'/'update'"] = None,
 ) -> dict[str, Any]:
     # Get active instance from session state
     # Removed session_state import
