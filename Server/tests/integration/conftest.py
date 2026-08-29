@@ -101,8 +101,26 @@ sys.modules.setdefault("fastmcp.server", fastmcp_server)
 sys.modules.setdefault("fastmcp.server.middleware", fastmcp_server_middleware)
 sys.modules.setdefault("fastmcp.server.server", fastmcp_server_server)
 
-# Stub mcp.types for TextContent, ImageContent, ToolAnnotations
+# Stub mcp.types for TextContent, ImageContent, ToolAnnotations -- ONLY as a fallback.
+#
+# \u26d4 PONT-08. This block used to build the stub unconditionally, and its first act was
+# `sys.modules.setdefault("mcp", types.ModuleType("mcp"))`. A conftest is imported during
+# COLLECTION, so that bare module became the process-wide `mcp` before any test module was
+# imported -- and every later module doing `from mcp.server.fastmcp import FastMCP` died with
+# `ModuleNotFoundError: No module named 'mcp.server'; 'mcp' is not a package`, taking the ENTIRE
+# suite down at collection time (measured 2026-08-29: 1272 passing tests reduced to `1 error`).
+# The failure names the newcomer, never this line, so the newcomer gets "fixed" instead.
+#
+# `mcp` is a real dependency today -- the starlette note below says so explicitly -- so the real
+# package is tried first and the stub only covers the environment where it is genuinely absent.
 _mcp_types = sys.modules.get("mcp.types")
+if _mcp_types is None:
+    try:
+        import mcp.types as _real_mcp_types
+
+        _mcp_types = _real_mcp_types
+    except ImportError:
+        _mcp_types = None
 if _mcp_types is None:
     _mcp_mod = sys.modules.setdefault("mcp", types.ModuleType("mcp"))
     _mcp_types = types.ModuleType("mcp.types")

@@ -380,18 +380,56 @@ class CustomToolService:
             )
 
     def _register_global_tool(self, definition: ToolDefinitionModel) -> None:
+        """Register one global custom tool, REPLACING it when its schema has changed.
+
+        \u26d4 PONT-08 -- WHY THIS NO LONGER RETURNS ON A KNOWN NAME. It used to: any tool already
+        present in `self._global_tools` was kept as it was first seen, for the whole life of the
+        server process, under a warning that presented the outcome as deliberate ("keeping existing
+        definition"). Measured 2026-08-29: changing a custom tool's description or parameters in
+        Unity then required `systemctl --user restart mcp-for-unity` before any MCP client could
+        see it, and nothing said so. An LLM picks its arguments from that schema -- so the freeze
+        did not merely hide an update, it made the server describe a tool that had stopped existing
+        that way.
+
+        \u26d4 AND `self._mcp.tool(...)` ALONE CANNOT FIX IT. FastMCP's `ToolManager.add_tool`
+        returns the incumbent and never replaces it (`tools/tool_manager.py`, `if existing: ...
+        return existing`), so the stale schema survives in a second place we do not own. The
+        removal below is therefore required, not defensive.
+
+        \u2b50 THE ORDER IS THE CONTRACT. The replacement handler is built BEFORE the incumbent is
+        removed, so a definition that cannot be built -- PONT-07's keyword parameter, say -- leaves
+        the working tool in place instead of deleting it and failing to put anything back. Losing a
+        tool outright is strictly worse than serving it stale.
+
+        Judge: `tests/test_custom_tool_schema_refresh.py`, which reads `tools/list` rather than this
+        object, because `tools/list` is what an LLM reads.
+        """
         existing = self._global_tools.get(definition.name)
-        if existing:
-            if existing.model_dump() != definition.model_dump():
-                logger.warning(
-                    "Custom tool '%s' already registered with a different schema; keeping existing definition.",
-                    definition.name,
-                )
+        if existing is not None and existing.model_dump() == definition.model_dump():
+            # Unity re-sends its whole tool list on every reconnection; nothing to do.
             return
 
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
         wrapped = telemetry_tool(definition.name)(wrapped)
+
+        if existing is not None:
+            try:
+                self._mcp.remove_tool(definition.name)
+            except Exception as exc:  # noqa: BLE001 -- a stale entry must not block the update
+                logger.warning(
+                    "Custom tool '%s' changed schema but the previous registration could not be "
+                    "removed (%s: %s); clients may keep reading the old schema until restart.",
+                    definition.name,
+                    type(exc).__name__,
+                    exc,
+                )
+            else:
+                logger.info(
+                    "Custom tool '%s' changed schema; replacing the previous definition.",
+                    definition.name,
+                )
+            self._global_tools.pop(definition.name, None)
 
         try:
             wrapped = self._mcp.tool(
