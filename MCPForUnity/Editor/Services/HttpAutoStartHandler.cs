@@ -17,13 +17,22 @@ namespace MCPForUnity.Editor.Services
     [InitializeOnLoad]
     internal static class HttpAutoStartHandler
     {
-        private const string SessionInitKey = "HttpAutoStartHandler.SessionInitialized";
+        // PONT-15 (fork energeia): this used to be "SessionInitialized" and was set BEFORE the work
+        // was scheduled. EditorApplication.delayCall does NOT survive a domain reload, while
+        // SessionState DOES. On a project that recompiles during startup, the scheduled callback was
+        // dropped and the flag stayed set, so auto-start never ran again for the whole editor
+        // session - silently, because every remaining guard returns without logging.
+        // The flag now means "we are actually connected", so every domain load re-arms the attempt.
+        private const string SessionConnectedKey = "HttpAutoStartHandler.SessionConnected";
+
+        // Per-domain guard: a reload tears the running attempt down with the domain, so this
+        // deliberately resets on reload while SessionConnectedKey does not.
+        private static bool _attemptInFlight;
 
         static HttpAutoStartHandler()
         {
-            // SessionState resets on editor process start but persists across domain reloads.
-            // Only run once per session — let HttpBridgeReloadHandler handle reload-resume cases.
-            if (SessionState.GetBool(SessionInitKey, false)) return;
+            // Already connected earlier in this editor session - HttpBridgeReloadHandler resumes it.
+            if (SessionState.GetBool(SessionConnectedKey, false)) return;
 
             if (Application.isBatchMode &&
                 string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("UNITY_MCP_ALLOW_BATCH")))
@@ -31,12 +40,10 @@ namespace MCPForUnity.Editor.Services
                 return;
             }
 
-            // Only check lightweight EditorPrefs here — services like EditorConfigurationCache
+            // Only check lightweight EditorPrefs here - services like EditorConfigurationCache
             // and MCPServiceLocator may not be initialized yet on fresh editor launch.
             bool autoStartEnabled = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
             if (!autoStartEnabled) return;
-
-            SessionState.SetBool(SessionInitKey, true);
 
             // Delay to let the editor and services finish initialization.
             EditorApplication.delayCall += OnEditorReady;
@@ -44,23 +51,51 @@ namespace MCPForUnity.Editor.Services
 
         private static void OnEditorReady()
         {
+            // PONT-15: every guard below used to return in silence. A bridge that never comes up and
+            // never says why is indistinguishable, from the outside, from a bridge that was never
+            // asked to come up - and that is exactly what cost this workshop a whole night.
             try
             {
+                if (_attemptInFlight) return;
+
                 bool autoStartEnabled = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
-                if (!autoStartEnabled) return;
+                if (!autoStartEnabled)
+                {
+                    McpLog.Info("[HTTP Auto-Start] Skipped: 'Auto-Start on Editor Load' is off.");
+                    return;
+                }
 
                 bool useHttp = EditorConfigurationCache.Instance.UseHttpTransport;
-                if (!useHttp) return;
+                if (!useHttp)
+                {
+                    McpLog.Info("[HTTP Auto-Start] Skipped: HTTP is not the selected transport.");
+                    return;
+                }
 
                 // Don't auto-start if bridge is already running.
-                if (MCPServiceLocator.TransportManager.IsRunning(TransportMode.Http)) return;
+                if (MCPServiceLocator.TransportManager.IsRunning(TransportMode.Http))
+                {
+                    SessionState.SetBool(SessionConnectedKey, true);
+                    return;
+                }
 
+                _attemptInFlight = true;
                 _ = AutoStartAsync();
             }
             catch (Exception ex)
             {
-                McpLog.Debug($"[HTTP Auto-Start] Deferred check failed: {ex.Message}");
+                // Was McpLog.Debug, which is off by default: the one branch that reports a real
+                // fault was the only one nobody could see.
+                McpLog.Warn($"[HTTP Auto-Start] Deferred check failed: {ex.Message}");
             }
+        }
+
+        /// <summary>
+        /// Records that the bridge is up, so the next domain reload stops re-arming auto-start.
+        /// </summary>
+        private static void MarkConnected()
+        {
+            SessionState.SetBool(SessionConnectedKey, true);
         }
 
         private static async Task AutoStartAsync()
@@ -104,6 +139,10 @@ namespace MCPForUnity.Editor.Services
             {
                 McpLog.Warn($"[HTTP Auto-Start] Failed: {ex.Message}");
             }
+            finally
+            {
+                _attemptInFlight = false;
+            }
         }
 
         /// <summary>
@@ -134,6 +173,7 @@ namespace MCPForUnity.Editor.Services
                     if (started)
                     {
                         McpLog.Info("Session connected");
+                        MarkConnected();
                         MCPForUnityEditorWindow.RequestHealthVerification();
                         return;
                     }
@@ -148,6 +188,7 @@ namespace MCPForUnity.Editor.Services
                     if (await MCPServiceLocator.Bridge.StartAsync())
                     {
                         McpLog.Info("Session connected");
+                        MarkConnected();
                         MCPForUnityEditorWindow.RequestHealthVerification();
                         return;
                     }
@@ -172,6 +213,7 @@ namespace MCPForUnity.Editor.Services
             if (started)
             {
                 McpLog.Info("Connected");
+                MarkConnected();
                 MCPForUnityEditorWindow.RequestHealthVerification();
             }
             else
