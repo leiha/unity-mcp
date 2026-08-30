@@ -249,9 +249,33 @@ async def refresh_unity(
         # If we timed out without confirming readiness, log and return failure
         if not ready_confirmed:
             logger.warning("refresh_unity: Timed out after 60s waiting for editor to become ready")
+            # PONT-23. This message used to be its whole reply, and it names nothing a caller can
+            # do next -- neither of the two moves that answer it.
+            # `[MEASURED 2026-08-30 08:2x-08:4x by this very seat, with three others waiting behind
+            #  it: an import was requested, this timeout came back, and the seat then watched a
+            #  domain-reload counter for TEN MINUTES that was never going to move. One line of the
+            #  editor log said exactly why -- a compile error in a neighbour's test assembly. The
+            #  reply pointed at neither the log nor the flag.]`
+            # ⇒ a refusal that does not name what unblocks it does not expose that capability at
+            #   all. The caller then does the only thing left: he waits, or he fires the identical
+            #   call again.
+            # ⚠ AND IT REPORTS, IT DOES NOT CONCLUDE. A timeout cannot tell a blocking compile
+            #   error from a domain reload that is merely long -- this workshop measures reloads at
+            #   2 to 9 minutes. Naming where to look is useful; naming a cause would send somebody
+            #   to repair the wrong thing.
             return MCPResponse(
                 success=False,
-                message="Refresh triggered but timed out after 60s waiting for editor readiness.",
+                message=(
+                    "Refresh triggered but timed out after 60s waiting for editor readiness. "
+                    "⚠ This says the editor did not report ready in time -- NOT that the refresh "
+                    "failed, and NOT that it is stuck. Two things it cannot tell apart, and one "
+                    "of them is silent: a compile error blocking the reload, and a domain reload "
+                    "that is simply long (2 to 9 minutes is normal here). "
+                    "⇒ Call read_console (types=['error']) BEFORE waiting any longer: a blocking "
+                    "compile error is reported there and nowhere in this reply. "
+                    "⇒ And pass wait_for_ready=False if you would rather poll readiness yourself "
+                    "than sit through this 60s wait on every attempt."
+                ),
                 data={"timeout": True, "wait_seconds": 60.0},
             )
 
