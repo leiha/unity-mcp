@@ -493,6 +493,147 @@ namespace MCPForUnity.Editor.Services
             PersistToSessionState(force: true);
         }
 
+        /// <summary>
+        /// Builds what a caller is told when a test job never started. It is a pure function of
+        /// four values on purpose: the sentence it produces is the whole point of PONT-20/21, and
+        /// a sentence buried inside <see cref="GetJob"/> could only be judged by a test able to
+        /// drive the editor's compile/update state. This one is judged anywhere.
+        ///
+        /// ⛔ PONT-20 -- WHY IT NAMES PLAY MODE, AND WHAT THAT CLAIM IS WORTH.
+        ///   "failed to initialize within 15000ms" named nothing a caller could act on, and the
+        ///   single most common circumstance around it in this workshop -- somebody holding play
+        ///   mode -- appeared in no field of the reply and in no word of the message. The tool does
+        ///   not refuse (asking for tests during play mode is legitimate); it refuses to stay
+        ///   silent. ⚠ It reports the editor's state at ASK time. It does NOT claim to have proven
+        ///   that play mode caused this particular timeout -- that correlation was observed on
+        ///   2026-08-30 and explicitly recorded as NOT established. Naming a suspect is useful;
+        ///   dressing it as a cause would send somebody to repair the wrong thing.
+        ///
+        /// ⛔ PONT-21 -- THE TWO THINGS THE MESSAGE STILL HID, AND THAT NO CALLER COULD DERIVE.
+        ///   `[MEASURED 2026-08-30 08:0x: the `plateau` seat hit this exact refusal, read `status:
+        ///    failed` and asked whether its tests were red. They had never run.]`
+        ///
+        ///   ① `status: failed` names the JOB, never your assertions. A caller who reads `failed`
+        ///      as a red verdict goes and repairs code that is fine. Same shape as this workshop's
+        ///      `total: 0 + Passed` trap -- a NULL verdict wearing a red coat.
+        ///      ⛔⛔ AND THE FIRST DRAFT OF THIS VERY MESSAGE GOT IT WRONG IN THE OTHER DIRECTION.
+        ///      It said "ZERO test cases ran". `TotalTests == null` does NOT say that: it says
+        ///      THIS JOB SAW NOTHING, and those two are indistinguishable from in here.
+        ///      `[MEASURED 2026-08-30 by the `plateau` seat, who retracted his own premise to us:
+        ///       his job was reported `failed · completed: 0 · failures_so_far: []` while
+        ///       TestResults.xml, written 3 minutes later, carried his five cases, all PASSED.]`
+        ///      ⇒ a message that asserts "nothing ran" sends a caller to re-run a green suite and
+        ///      spend a screen slot for nothing. The tool must report what it OBSERVED and name
+        ///      the artefact that settles it -- never conclude for the caller.
+        ///
+        ///   ② `init_timeout` EXISTS. It is a first-class parameter of run_tests
+        ///      (Server/src/services/tools/run_tests.py) that lands in InitTimeoutMs and is read by
+        ///      the caller of this method -- and no failure path had ever named it.
+        ///      ⭐ A capability that a refusal does not name does not exist: the caller cannot
+        ///      discover from the refusal the one knob that answers it, so he retries the identical
+        ///      call, or gives up on the tool.
+        ///
+        ///   The waited value AND its origin are both reported, because "I waited 15000ms" and
+        ///   "I waited the 15000ms you asked for" call for opposite next moves.
+        ///
+        /// HOW TO PROVE THESE ASSERTIONS CAN REDDEN
+        ///   The judge is Energeia.Pont.Tests, ATestJobThatNeverRanSaysSoAndNamesTheKnobTests.
+        ///   PREDICTION -- not yet played (this method has never returned through the real bridge).
+        ///   MUT-1  drop the `timeoutWasAskedFor` branch (always emit the default wording)
+        ///          ⇒ expected RED: TheOriginOfTheWait_IsNotTheSameSentenceInBothCases,
+        ///                          AnAskedForWait_SaysTheCallerAskedForIt
+        ///          ⇒ expected GREEN: the observed-not-concluded case and the knob-naming case
+        ///   MUT-2  drop the word `init_timeout` from the sentence
+        ///          ⇒ expected RED: TheRefusalNamesTheKnobThatAnswersIt, and it ALONE
+        ///   MUT-3  always emit the "not been written since" wording, whatever the mtime
+        ///          ⇒ expected RED: AResultFileWrittenAfterTheJobStarted_IsPointedAt,
+        ///                          TheResultFileNote_IsNotTheSameSentenceInBothCases
+        /// </summary>
+        /// <param name="resultsPath">
+        /// Where the test runner writes its result file, or null when we cannot name it. This is
+        /// the ONLY artefact that separates "nothing ran" from "the start notification was lost",
+        /// and it costs nothing to point at.
+        /// </param>
+        /// <param name="resultsWrittenUnixMs">Last-write time of that file, 0 when absent.</param>
+        /// <param name="jobStartedUnixMs">When this job was asked for.</param>
+        internal static string BuildInitializationTimeoutError(
+            long waitedMs,
+            bool timeoutWasAskedFor,
+            bool startedInPlayMode,
+            string mode,
+            string resultsPath,
+            long resultsWrittenUnixMs,
+            long jobStartedUnixMs)
+        {
+            string waitedNote = timeoutWasAskedFor
+                ? $"Waited {waitedMs} ms -- the value you passed as init_timeout."
+                : $"Waited {waitedMs} ms -- the default; nobody asked for a longer one.";
+
+            string playModeNote = startedInPlayMode
+                ? $" The editor was in PLAY MODE when this job was asked for, and this job asked for {mode} tests. That is the first thing to check -- not a proven cause."
+                : string.Empty;
+
+            string resultsNote;
+            if (string.IsNullOrEmpty(resultsPath))
+            {
+                resultsNote = string.Empty;
+            }
+            else if (resultsWrittenUnixMs > jobStartedUnixMs)
+            {
+                resultsNote = $" ⭐ READ THIS BEFORE RE-RUNNING ANYTHING: {resultsPath} was written "
+                            + $"{resultsWrittenUnixMs - jobStartedUnixMs} ms AFTER this job was asked for. "
+                            + "Cases may well have run and finished while this job saw nothing. It carries the "
+                            + "case names and the outcome -- that file settles it, this message does not. "
+                            + "(A newer file is not proof that it is YOUR run: confront the case names.)";
+            }
+            else
+            {
+                resultsNote = $" The runner's result file ({resultsPath}) has not been written since this job "
+                            + "was asked for -- consistent with nothing having run, though not proof of it.";
+            }
+
+            return "Test job failed to INITIALIZE: this bridge never saw the test runner start. "
+                 + "⚠ That is NOT the same as \"no test ran\": `completed: 0`, a null `total` and an empty "
+                 + "`failures_so_far` say what THIS JOB OBSERVED. They are not a verdict on your assertions, "
+                 + "and they do not separate \"nothing ran\" from \"cases ran and the start notification was lost\"."
+                 + resultsNote
+                 + " " + waitedNote
+                 + " Raise the wait with the `init_timeout` parameter of run_tests (milliseconds, e.g. init_timeout: 120000) "
+                 + "when a domain reload, an import or a busy editor may be eating the first seconds."
+                 + playModeNote;
+        }
+
+        /// <summary>
+        /// Where Unity's test runner drops its result file by default. Returned as a path plus a
+        /// last-write time, never as a verdict: this method does not know whose run wrote it.
+        /// </summary>
+        private static void ReadRunnerResultFile(out string path, out long writtenUnixMs)
+        {
+            path = null;
+            writtenUnixMs = 0;
+            try
+            {
+                // ⚠ Fully qualified on purpose: this file does not `using UnityEngine`, and adding
+                // it would drag UnityEngine.Debug/Object into a file that already lives in
+                // UnityEditor. ⚠ persistentDataPath throws off the main thread; the catch below
+                // then leaves the path null, and a hint we could not verify is simply not given.
+                string candidate = System.IO.Path.Combine(UnityEngine.Application.persistentDataPath, "TestResults.xml");
+                path = candidate;
+                var info = new System.IO.FileInfo(candidate);
+                if (info.Exists)
+                {
+                    writtenUnixMs = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero).ToUnixTimeMilliseconds();
+                }
+            }
+            catch (Exception)
+            {
+                // A path we cannot stat is a path we do not name: an unreadable hint is worse than
+                // none, because a caller would go looking for a file we never checked.
+                path = null;
+                writtenUnixMs = 0;
+            }
+        }
+
         internal static TestJob GetJob(string jobId)
         {
             if (string.IsNullOrWhiteSpace(jobId))
@@ -518,22 +659,18 @@ namespace MCPForUnity.Editor.Services
                     long initTimeout = job.InitTimeoutMs > 0 ? job.InitTimeoutMs : DefaultInitializationTimeoutMs;
                     if (!EditorApplication.isCompiling && !EditorApplication.isUpdating && now - job.StartedUnixMs > initTimeout)
                     {
-                        // PONT-20. "failed to initialize within 15000ms" names NOTHING the caller
-                        // can act on, and the single most common circumstance around it in this
-                        // workshop -- somebody holding play mode -- appears in no field of the
-                        // reply and in no word of the message. The tool does not refuse (asking
-                        // for tests during play mode is legitimate); it refuses to stay silent.
-                        // ⚠ WHAT THIS SAYS AND WHAT IT DOES NOT: it reports the editor's state at
-                        // ASK time. It does NOT claim to have proven that play mode caused this
-                        // particular timeout -- that correlation was observed on 2026-08-30 and
-                        // explicitly recorded as NOT established. Naming a suspect is useful;
-                        // dressing it as a cause would send somebody to repair the wrong thing.
-                        string playModeNote = job.StartedInPlayMode
-                            ? $" The editor was in PLAY MODE when this job was asked for, and this job asked for {job.Mode} tests. That is the first thing to check -- not a proven cause."
-                            : string.Empty;
-                        McpLog.Warn($"[TestJobManager] Job {jobId} failed to initialize within {initTimeout}ms, auto-failing.{playModeNote}");
+                        ReadRunnerResultFile(out string resultsPath, out long resultsWrittenUnixMs);
+                        string initError = BuildInitializationTimeoutError(
+                            initTimeout,
+                            timeoutWasAskedFor: job.InitTimeoutMs > 0,
+                            startedInPlayMode: job.StartedInPlayMode,
+                            mode: job.Mode,
+                            resultsPath: resultsPath,
+                            resultsWrittenUnixMs: resultsWrittenUnixMs,
+                            jobStartedUnixMs: job.StartedUnixMs);
+                        McpLog.Warn($"[TestJobManager] Job {jobId} failed to initialize within {initTimeout}ms, auto-failing. {initError}");
                         job.Status = TestJobStatus.Failed;
-                        job.Error = "Test job failed to initialize (tests did not start within timeout)." + playModeNote;
+                        job.Error = initError;
                         job.FinishedUnixMs = now;
                         job.LastUpdateUnixMs = now;
                         if (_currentJobId == jobId)
