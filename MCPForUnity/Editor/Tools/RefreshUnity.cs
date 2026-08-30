@@ -18,12 +18,47 @@ namespace MCPForUnity.Editor.Tools
     {
         private const int DefaultWaitTimeoutSeconds = 60;
 
+        /// <summary>
+        /// PONT-18 — what an import in play mode actually costs, said in the reply rather than
+        /// left for the caller to discover from an empty world. Null when there is nothing to warn
+        /// about: a caveat that fires on every call stops being read.
+        /// </summary>
+        private static string PlayModeWarningOrNull(bool wasPlaying)
+            => wasPlaying
+                ? "⛔ THE EDITOR WAS IN PLAY MODE WHEN THIS REFRESH WAS ASKED FOR. If it triggers a "
+                + "domain reload, YOUR RUNNING WORLD IS DESTROYED — the DI container is torn down — "
+                + "AND UNITY STAYS IN PLAY MODE. Application.isPlaying will still be true, "
+                + "is_compiling will go back to false, and the screen will still be painted: all "
+                + "three read as 'it is fine' over a world that is gone. The only probe that bites "
+                + "is di_state -> built. If you needed that world, stop and re-enter play mode "
+                + "(~50 s) rather than measure anything on what is left. ⭐ And the ordering that "
+                + "avoids this entirely: IMPORT FIRST, BUILD THE WORLD SECOND — never the reverse."
+                : null;
+
         public static async Task<object> HandleCommand(JObject @params)
         {
             string mode = @params?["mode"]?.ToString() ?? "if_dirty";
             string scope = @params?["scope"]?.ToString() ?? "all";
             string compile = @params?["compile"]?.ToString() ?? "none";
             bool waitForReady = ParamCoercion.CoerceBool(@params?["wait_for_ready"], false);
+
+            // ⛔⛔ PONT-18 — AN IMPORT IN PLAY MODE DESTROYS THE RUNNING WORLD, AND EVERY SIGNAL
+            //   AFTERWARDS SAYS IT DID NOT. `[MEASURED 2026-08-30 02:17 by the `pont` seat and
+            //   filed in PROBLEMES-DE-L-OUTIL.md, nature: RÉUSSITE QUI MENT.]`
+            //   A refresh in play mode triggers a full domain reload — "Domain Reload Profiling:
+            //   95962ms" in the editor log — which destroys the DI container, while Unity STAYS in
+            //   play mode. What the caller then reads:
+            //       Application.isPlaying     -> True      "the game is running"
+            //       is_compiling              -> false     "it is done"
+            //       the screen                -> painted   the whole HUD is still there
+            //   and the world is gone: day 00, empty tree, empty stocks, a bare board. Nothing on
+            //   screen says the world left. The only probe that bites is `di_state` -> built.
+            // ⭐ READ BEFORE, NOT AFTER: by the time the reply is built, a reload may already have
+            //   flipped this, and the caller would be told about a state that is no longer the one
+            //   its own request walked into.
+            // ⚠ This does NOT refuse the import — importing while playing is sometimes exactly what
+            //   a seat wants. It refuses to stay SILENT about what the import costs.
+            bool wasPlayingWhenAsked = EditorApplication.isPlaying;
 
             if (TestRunStatus.IsRunning)
             {
@@ -101,6 +136,8 @@ namespace MCPForUnity.Editor.Tools
                         refresh_triggered = refreshTriggered,
                         compile_requested = compileRequested,
                         resulting_state = "unknown",
+                        play_mode_when_asked = wasPlayingWhenAsked,
+                        play_mode_warning = PlayModeWarningOrNull(wasPlayingWhenAsked),
                     });
                 }
                 catch (Exception ex)
@@ -113,15 +150,21 @@ namespace MCPForUnity.Editor.Tools
                 ? "compiling"
                 : (EditorApplication.isUpdating ? "asset_import" : "idle");
 
-            return new SuccessResponse("Refresh requested.", new
-            {
-                refresh_triggered = refreshTriggered,
-                compile_requested = compileRequested,
-                resulting_state = resultingState,
-                hint = shouldWaitForReady
-                    ? "Unity refresh completed; editor should be ready."
-                    : "If Unity enters compilation/domain reload, poll editor_state until ready_for_tools is true."
-            });
+            return new SuccessResponse(
+                wasPlayingWhenAsked
+                    ? "⛔ Refresh requested WHILE PLAYING — read play_mode_warning before trusting anything else."
+                    : "Refresh requested.",
+                new
+                {
+                    refresh_triggered = refreshTriggered,
+                    compile_requested = compileRequested,
+                    resulting_state = resultingState,
+                    play_mode_when_asked = wasPlayingWhenAsked,
+                    play_mode_warning = PlayModeWarningOrNull(wasPlayingWhenAsked),
+                    hint = shouldWaitForReady
+                        ? "Unity refresh completed; editor should be ready."
+                        : "If Unity enters compilation/domain reload, poll editor_state until ready_for_tools is true."
+                });
         }
 
         private static Task WaitForUnityReadyAsync(TimeSpan timeout)
