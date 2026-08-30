@@ -41,6 +41,13 @@ namespace MCPForUnity.Editor.Services
         public string Error { get; set; }
         public TestRunResult Result { get; set; }
         public long InitTimeoutMs { get; set; }
+
+        /// PONT-20. Whether the editor was in PLAY MODE at the moment this job was ASKED FOR.
+        /// Read at StartJob and never again: by the time an initialization timeout fires, a
+        /// domain reload may have flipped the editor's state, and the answer would then describe
+        /// a world that is not the one the caller asked in. Same reason PONT-18 reads its play
+        /// mode flag before the refresh rather than while building the reply.
+        public bool StartedInPlayMode { get; set; }
     }
 
     /// <summary>
@@ -142,6 +149,10 @@ namespace MCPForUnity.Editor.Services
             public List<TestJobFailure> failures_so_far { get; set; }
             public string error { get; set; }
             public long init_timeout_ms { get; set; }
+            // PONT-20. Persisted on purpose: a job asked for during play mode is exactly the
+            // job most likely to cross a domain reload, and losing the flag there would drop it
+            // from the only message that ever mentions it.
+            public bool started_in_play_mode { get; set; }
         }
 
         private static TestJobStatus ParseStatus(string status)
@@ -205,6 +216,7 @@ namespace MCPForUnity.Editor.Services
                             FailuresSoFar = pj.failures_so_far ?? new List<TestJobFailure>(),
                             Error = pj.error,
                             InitTimeoutMs = pj.init_timeout_ms,
+                            StartedInPlayMode = pj.started_in_play_mode,
                             // Intentionally not persisted to avoid ballooning SessionState.
                             Result = null
                         };
@@ -278,7 +290,8 @@ namespace MCPForUnity.Editor.Services
                             last_finished_unix_ms = j.LastFinishedUnixMs,
                             failures_so_far = (j.FailuresSoFar ?? new List<TestJobFailure>()).Take(FailureCap).ToList(),
                             error = j.Error,
-                            init_timeout_ms = j.InitTimeoutMs
+                            init_timeout_ms = j.InitTimeoutMs,
+                            started_in_play_mode = j.StartedInPlayMode
                         })
                         .ToList();
 
@@ -326,7 +339,8 @@ namespace MCPForUnity.Editor.Services
                 FailuresSoFar = new List<TestJobFailure>(),
                 Error = null,
                 Result = null,
-                InitTimeoutMs = initTimeoutMs
+                InitTimeoutMs = initTimeoutMs,
+                StartedInPlayMode = EditorApplication.isPlaying
             };
 
             // Single lock scope for check-and-set to avoid TOCTOU race
@@ -504,9 +518,22 @@ namespace MCPForUnity.Editor.Services
                     long initTimeout = job.InitTimeoutMs > 0 ? job.InitTimeoutMs : DefaultInitializationTimeoutMs;
                     if (!EditorApplication.isCompiling && !EditorApplication.isUpdating && now - job.StartedUnixMs > initTimeout)
                     {
-                        McpLog.Warn($"[TestJobManager] Job {jobId} failed to initialize within {initTimeout}ms, auto-failing");
+                        // PONT-20. "failed to initialize within 15000ms" names NOTHING the caller
+                        // can act on, and the single most common circumstance around it in this
+                        // workshop -- somebody holding play mode -- appears in no field of the
+                        // reply and in no word of the message. The tool does not refuse (asking
+                        // for tests during play mode is legitimate); it refuses to stay silent.
+                        // ⚠ WHAT THIS SAYS AND WHAT IT DOES NOT: it reports the editor's state at
+                        // ASK time. It does NOT claim to have proven that play mode caused this
+                        // particular timeout -- that correlation was observed on 2026-08-30 and
+                        // explicitly recorded as NOT established. Naming a suspect is useful;
+                        // dressing it as a cause would send somebody to repair the wrong thing.
+                        string playModeNote = job.StartedInPlayMode
+                            ? $" The editor was in PLAY MODE when this job was asked for, and this job asked for {job.Mode} tests. That is the first thing to check -- not a proven cause."
+                            : string.Empty;
+                        McpLog.Warn($"[TestJobManager] Job {jobId} failed to initialize within {initTimeout}ms, auto-failing.{playModeNote}");
                         job.Status = TestJobStatus.Failed;
-                        job.Error = "Test job failed to initialize (tests did not start within timeout)";
+                        job.Error = "Test job failed to initialize (tests did not start within timeout)." + playModeNote;
                         job.FinishedUnixMs = now;
                         job.LastUpdateUnixMs = now;
                         if (_currentJobId == jobId)

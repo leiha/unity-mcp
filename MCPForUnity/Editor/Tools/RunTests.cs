@@ -4,6 +4,7 @@ using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Resources.Tests;
 using MCPForUnity.Editor.Services;
 using Newtonsoft.Json.Linq;
+using UnityEditor;
 using UnityEditor.TestTools.TestRunner.Api;
 
 namespace MCPForUnity.Editor.Tools
@@ -46,7 +47,23 @@ namespace MCPForUnity.Editor.Tools
 
                 var filterOptions = GetFilterOptions(@params);
                 long initTimeoutMs = p.GetInt("initTimeout") ?? 0;
+
+                // PONT-20. READ BEFORE STARTING THE JOB, NEVER WHILE BUILDING THE REPLY.
+                // Starting a run can trigger a domain reload, and a flag read afterwards would
+                // describe a world that is not the one this call was made in. Same law as
+                // PONT-18: the answer must be about the moment of the ASK.
+                bool playModeWhenAsked = EditorApplication.isPlaying;
+
                 string jobId = TestJobManager.StartJob(parsedMode.Value, filterOptions, initTimeoutMs);
+
+                // null when there is nothing to say. A warning that fires on every call stops
+                // being read, and then it protects nobody -- the reason PONT-17's captureCaveat
+                // is null on the healthy path too.
+                string playModeCaveat = playModeWhenAsked
+                    ? $"The editor is in play mode and you asked for {parsedMode.Value} tests. "
+                      + "If this job comes back \"failed to initialize\", check that first: the "
+                      + "timeout message names the delay and nothing else."
+                    : null;
 
                 return Task.FromResult<object>(new SuccessResponse("Test job started.", new
                 {
@@ -54,7 +71,9 @@ namespace MCPForUnity.Editor.Tools
                     status = "running",
                     mode = parsedMode.Value.ToString(),
                     include_details = includeDetails,
-                    include_failed_tests = includeFailedTests
+                    include_failed_tests = includeFailedTests,
+                    play_mode_when_asked = playModeWhenAsked,
+                    play_mode_caveat = playModeCaveat
                 }));
             }
             catch (Exception ex)
