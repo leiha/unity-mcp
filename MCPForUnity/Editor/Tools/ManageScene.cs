@@ -622,8 +622,22 @@ namespace MCPForUnity.Editor.Tools
 
                     if (ScreenshotUtility.IsUnderAssets(result.ProjectRelativePath))
                         AssetDatabase.ImportAsset(result.ProjectRelativePath, ImportAssetOptions.ForceSynchronousImport);
-                    string cameraName = Camera.main != null ? Camera.main.name : "composited";
-                    string message = $"Screenshot captured to '{result.ProjectRelativePath}' (camera: {cameraName}).";
+                    // ⛔ PONT-17 — THIS LINE USED TO READ `Camera.main.name`, NAMING A CAMERA THAT
+                    //   TOOK NO PART IN THE CAPTURE. A reader who applied the tool's own docs then
+                    //   concluded "a camera was used, so the overlay UI is absent from my image" and
+                    //   threw away a perfectly good picture — or went off repairing a UI that works.
+                    //   `[REPORTED 2026-08-30 01:48 in PROBLEMES-DE-L-OUTIL.md, nature: RÉUSSITE QUI
+                    //    MENT — the behaviour was right, the account of it was false.]`
+                    // ⭐ And when the composited capture silently fell back to a camera render, this
+                    //   same line printed the same shape of message for an image with NO UI AT ALL.
+                    //   `result.Mode` now separates the two; `cameraName` only names a camera when
+                    //   one was really rendered.
+                    bool renderedByCamera = result.Mode == ScreenshotCaptureMode.CameraFallback;
+                    string cameraName = renderedByCamera && Camera.main != null ? Camera.main.name : "composited";
+                    string caveat = result.Mode.CaveatOrNull();
+                    string message = $"Screenshot captured to '{result.ProjectRelativePath}' "
+                                   + $"(capture: {result.Mode.ToWire()})."
+                                   + (caveat != null ? " " + caveat : string.Empty);
                     return new SuccessResponse(message, BuildScreenshotResponseData(result, cameraName, includeImage: true));
                 }
 
@@ -722,6 +736,11 @@ namespace MCPForUnity.Editor.Tools
                         superSize = defaultResult.SuperSize,
                         isAsync = defaultResult.IsAsync,
                         captureSource = "game_view",
+                        // ⭐ PONT-17 — this branch builds its own payload and so did not go through
+                        //   BuildScreenshotResponseData. Left alone it would have been the one path
+                        //   still reporting nothing, which is exactly how the hole survived before.
+                        captureMode = defaultResult.Mode.ToWire(),
+                        uiIncluded = defaultResult.Mode.IncludesUi(),
                     }
                 );
             }
@@ -731,6 +750,12 @@ namespace MCPForUnity.Editor.Tools
             }
         }
 
+        // ⛔⛔ PONT-17 — THE REPLY NOW SAYS WHAT KIND OF IMAGE IT IS. Before this, a composited
+        //   capture and a silent camera fallback were indistinguishable in the reply: both printed
+        //   `(camera: <name>)` and both returned `success: true`, while only one of them contained
+        //   the UI. The warning existed — in the Unity console, which no tool caller reads.
+        // ⭐ `uiIncluded` is nullable ON PURPOSE: `null` means no capture path declared itself, and
+        //   that is a different answer from `false`. Never collapse it.
         private static Dictionary<string, object> BuildScreenshotResponseData(
             ScreenshotCaptureResult result,
             string cameraName,
@@ -744,7 +769,15 @@ namespace MCPForUnity.Editor.Tools
                 { "isAsync", false },
                 { "camera", cameraName },
                 { "captureSource", "game_view" },
+                { "captureMode", result.Mode.ToWire() },
+                { "uiIncluded", result.Mode.IncludesUi() },
             };
+
+            string caveat = result.Mode.CaveatOrNull();
+            if (caveat != null)
+            {
+                data["captureCaveat"] = caveat;
+            }
 
             if (includeImage && result.ImageBase64 != null)
             {

@@ -7,6 +7,96 @@ using UnityEngine;
 namespace MCPForUnity.Runtime.Helpers
 //The reason for having another Runtime Utilities in additional to Editor Utilities is to avoid Editor-only dependencies in this runtime code.
 {
+    /// <summary>
+    /// WHICH PATH ACTUALLY PRODUCED THE IMAGE. Not cosmetic: the paths do not photograph the
+    /// same thing, and until PONT-17 the reply could not tell them apart.
+    ///
+    /// ⛔⛔ PONT-17 — A COMPOSITED CAPTURE AND A SILENT CAMERA FALLBACK RETURNED THE *SAME*
+    /// REPLY. `[MEASURED 2026-08-30 by the `pont` seat, reading ManageScene.CaptureScreenshot:
+    /// the composited branch printed `(camera: {Camera.main.name})` — a camera nobody asked for
+    /// and that took no part in the capture — while the fallback branch, whose image contains no
+    /// Screen Space Overlay canvas and no UI Toolkit panel at all, printed a message of the very
+    /// same shape.]` ⇒ an LLM reading the reply could not know whether it held a picture of the
+    /// game or a picture of an empty skybox. The warning existed, but only in the Unity console,
+    /// which a tool caller never reads.
+    ///
+    /// ⭐ `Unknown` is deliberate and must stay: a capture path that has not declared itself
+    /// reports `unknown` rather than borrowing a plausible-looking value. A visible hole beats an
+    /// invented answer — that is the whole point of this enum.
+    /// </summary>
+    public enum ScreenshotCaptureMode
+    {
+        /// <summary>No path declared itself. Treat the image as unqualified.</summary>
+        Unknown = 0,
+        /// <summary>ScreenCapture composited frame: UI Toolkit and overlay canvases ARE included.</summary>
+        Composited,
+        /// <summary>Composited capture returned null and a plain camera render was substituted: NO UI.</summary>
+        CameraFallback,
+        /// <summary>The caller named a camera. A camera render excludes overlay canvases: NO UI.</summary>
+        CameraExplicit,
+        /// <summary>ScreenCapture.CaptureScreenshot queued to disk; the file appears one or more frames later.</summary>
+        AsyncScreenCapture,
+        /// <summary>An EditorWindow was captured, not the game view.</summary>
+        EditorWindow,
+    }
+
+    public static class ScreenshotCaptureModeExtensions
+    {
+        /// <summary>Stable string for the MCP reply. ⛔ These literals are a contract with the
+        /// server and with every LLM reading it — rename the enum member if you must, never these.</summary>
+        public static string ToWire(this ScreenshotCaptureMode mode)
+        {
+            switch (mode)
+            {
+                case ScreenshotCaptureMode.Composited: return "composited";
+                case ScreenshotCaptureMode.CameraFallback: return "camera_fallback";
+                case ScreenshotCaptureMode.CameraExplicit: return "camera_explicit";
+                case ScreenshotCaptureMode.AsyncScreenCapture: return "async_screencapture";
+                case ScreenshotCaptureMode.EditorWindow: return "editor_window";
+                default: return "unknown";
+            }
+        }
+
+        /// <summary>
+        /// Does the resulting image contain the Screen Space Overlay canvases and UI Toolkit panels?
+        /// ⭐ Returns null for <see cref="ScreenshotCaptureMode.Unknown"/> — "nobody said" is a third
+        /// answer, and collapsing it into false would be inventing one.
+        /// </summary>
+        public static bool? IncludesUi(this ScreenshotCaptureMode mode)
+        {
+            switch (mode)
+            {
+                case ScreenshotCaptureMode.Composited: return true;
+                case ScreenshotCaptureMode.AsyncScreenCapture: return true;
+                case ScreenshotCaptureMode.CameraFallback: return false;
+                case ScreenshotCaptureMode.CameraExplicit: return false;
+                case ScreenshotCaptureMode.EditorWindow: return false;
+                default: return null;
+            }
+        }
+
+        /// <summary>A caller-facing sentence, or null when there is nothing to warn about.</summary>
+        public static string CaveatOrNull(this ScreenshotCaptureMode mode)
+        {
+            switch (mode)
+            {
+                case ScreenshotCaptureMode.CameraFallback:
+                    return "⛔ THE COMPOSITED CAPTURE FAILED AND A PLAIN CAMERA RENDER WAS SUBSTITUTED: "
+                         + "this image contains NO Screen Space Overlay canvas and NO UI Toolkit panel. "
+                         + "On a UI-driven project it shows the 3D scene alone and looks perfectly healthy. "
+                         + "Do not read a screen off it. Most common cause: the editor was PAUSED.";
+                case ScreenshotCaptureMode.CameraExplicit:
+                    return "A camera was named, so this is a camera render: it excludes Screen Space Overlay "
+                         + "canvases and UI Toolkit panels. Omit 'camera' to capture the composited screen.";
+                case ScreenshotCaptureMode.Unknown:
+                    return "⛔ This capture path did not declare how the image was produced: it is unknown "
+                         + "whether the UI is present. Do not conclude anything from what is missing.";
+                default:
+                    return null;
+            }
+        }
+    }
+
     public readonly struct ScreenshotCaptureResult
     {
         public ScreenshotCaptureResult(string fullPath, string projectRelativePath, int superSize)
@@ -21,6 +111,13 @@ namespace MCPForUnity.Runtime.Helpers
 
         public ScreenshotCaptureResult(string fullPath, string projectRelativePath, int superSize, bool isAsync,
             string imageBase64, int imageWidth, int imageHeight)
+            : this(fullPath, projectRelativePath, superSize, isAsync, imageBase64, imageWidth, imageHeight,
+                   ScreenshotCaptureMode.Unknown)
+        {
+        }
+
+        public ScreenshotCaptureResult(string fullPath, string projectRelativePath, int superSize, bool isAsync,
+            string imageBase64, int imageWidth, int imageHeight, ScreenshotCaptureMode mode)
         {
             FullPath = fullPath;
             ProjectRelativePath = projectRelativePath;
@@ -29,7 +126,14 @@ namespace MCPForUnity.Runtime.Helpers
             ImageBase64 = imageBase64;
             ImageWidth = imageWidth;
             ImageHeight = imageHeight;
+            Mode = mode;
         }
+
+        /// <summary>Same result, re-stamped with the path that actually produced it. Used where a
+        /// capture delegates to another one — the delegate knows how it rendered, the caller knows why.</summary>
+        public ScreenshotCaptureResult WithMode(ScreenshotCaptureMode mode)
+            => new ScreenshotCaptureResult(FullPath, ProjectRelativePath, SuperSize, IsAsync,
+                                           ImageBase64, ImageWidth, ImageHeight, mode);
 
         public string FullPath { get; }
         /// <summary>Path relative to the Unity project root (e.g. "Captures/foo.png"). Suitable for ScreenCapture.CaptureScreenshot.</summary>
@@ -40,6 +144,8 @@ namespace MCPForUnity.Runtime.Helpers
         public string ImageBase64 { get; }
         public int ImageWidth { get; }
         public int ImageHeight { get; }
+        /// <summary>Which path produced the image. See <see cref="ScreenshotCaptureMode"/>.</summary>
+        public ScreenshotCaptureMode Mode { get; }
     }
 
     public static class ScreenshotUtility
@@ -76,7 +182,8 @@ namespace MCPForUnity.Runtime.Helpers
             bool ensureUniqueFileName = true,
             string folderOverride = null)
         {
-            ScreenshotCaptureResult result = PrepareCaptureResult(fileName, superSize, ensureUniqueFileName, folderOverride, isAsync: true);
+            ScreenshotCaptureResult result = PrepareCaptureResult(fileName, superSize, ensureUniqueFileName, folderOverride, isAsync: true,
+                mode: ScreenshotCaptureMode.AsyncScreenCapture);
             // ScreenCapture.CaptureScreenshot accepts paths relative to the project root.
             ScreenCapture.CaptureScreenshot(result.ProjectRelativePath, result.SuperSize);
             return result;
@@ -101,7 +208,8 @@ namespace MCPForUnity.Runtime.Helpers
                 throw new ArgumentNullException(nameof(camera));
             }
 
-            ScreenshotCaptureResult result = PrepareCaptureResult(fileName, superSize, ensureUniqueFileName, folderOverride, isAsync: false);
+            ScreenshotCaptureResult result = PrepareCaptureResult(fileName, superSize, ensureUniqueFileName, folderOverride, isAsync: false,
+                mode: ScreenshotCaptureMode.CameraExplicit);
             int size = result.SuperSize;
 
             int width = Mathf.Max(1, camera.pixelWidth > 0 ? camera.pixelWidth : Screen.width);
@@ -161,7 +269,7 @@ namespace MCPForUnity.Runtime.Helpers
             {
                 return new ScreenshotCaptureResult(
                     result.FullPath, result.ProjectRelativePath, result.SuperSize, false,
-                    imageBase64, imgW, imgH);
+                    imageBase64, imgW, imgH, result.Mode);
             }
             return result;
         }
@@ -242,7 +350,8 @@ namespace MCPForUnity.Runtime.Helpers
             int maxResolution = 0,
             string folderOverride = null)
         {
-            ScreenshotCaptureResult result = PrepareCaptureResult(fileName, superSize, ensureUniqueFileName, folderOverride: folderOverride, isAsync: false);
+            ScreenshotCaptureResult result = PrepareCaptureResult(fileName, superSize, ensureUniqueFileName, folderOverride: folderOverride, isAsync: false,
+                mode: ScreenshotCaptureMode.Composited);
             Texture2D tex = null;
             Texture2D downscaled = null;
             string imageBase64 = null;
@@ -283,8 +392,14 @@ namespace MCPForUnity.Runtime.Helpers
                           + "screen off it. Most common cause: the editor was PAUSED, so the "
                           + "WaitForEndOfFrame capture missed its window (check "
                           + "EditorApplication.isPaused).");
+                        // ⭐ PONT-17 — RE-STAMPED. The delegate renders a camera and would otherwise
+                        //   report `camera_explicit`, which is what an intentional camera shot looks
+                        //   like. This one is NOT intentional: it is a silent substitution, and the
+                        //   caller must be able to tell the two apart in the reply, not only in the
+                        //   console warning above.
                         return CaptureFromCameraToProjectFolder(cam, fileName, superSize, ensureUniqueFileName,
-                            includeImage, maxResolution, folderOverride: folderOverride);
+                            includeImage, maxResolution, folderOverride: folderOverride)
+                            .WithMode(ScreenshotCaptureMode.CameraFallback);
                     }
                     throw new InvalidOperationException("ScreenCapture.CaptureScreenshotAsTexture returned null and no fallback camera available.");
                 }
@@ -324,7 +439,7 @@ namespace MCPForUnity.Runtime.Helpers
             {
                 return new ScreenshotCaptureResult(
                     result.FullPath, result.ProjectRelativePath, result.SuperSize, false,
-                    imageBase64, imgW, imgH);
+                    imageBase64, imgW, imgH, result.Mode);
             }
             return result;
         }
@@ -651,7 +766,7 @@ namespace MCPForUnity.Runtime.Helpers
                 UnityEngine.Object.DestroyImmediate(tex);
         }
 
-        private static ScreenshotCaptureResult PrepareCaptureResult(string fileName, int superSize, bool ensureUniqueFileName, string folderOverride, bool isAsync)
+        private static ScreenshotCaptureResult PrepareCaptureResult(string fileName, int superSize, bool ensureUniqueFileName, string folderOverride, bool isAsync, ScreenshotCaptureMode mode)
         {
             int size = Mathf.Max(1, superSize);
             string resolvedName = BuildFileName(fileName);
@@ -667,7 +782,8 @@ namespace MCPForUnity.Runtime.Helpers
             string normalizedFullPath = fullPath.Replace('\\', '/');
             string projectRelativePath = ToProjectRelativePath(normalizedFullPath);
 
-            return new ScreenshotCaptureResult(normalizedFullPath, projectRelativePath, size, isAsync);
+            return new ScreenshotCaptureResult(normalizedFullPath, projectRelativePath, size, isAsync,
+                imageBase64: null, imageWidth: 0, imageHeight: 0, mode: mode);
         }
 
         /// <summary>

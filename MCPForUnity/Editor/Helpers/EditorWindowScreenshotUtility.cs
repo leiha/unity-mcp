@@ -102,7 +102,8 @@ namespace MCPForUnity.Editor.Helpers
                         false,
                         imageBase64,
                         imageWidth,
-                        imageHeight);
+                        imageHeight,
+                        ScreenshotCaptureMode.EditorWindow);
                 }
 
                 return result;
@@ -336,7 +337,10 @@ namespace MCPForUnity.Editor.Helpers
             string projectRelativePath = normalizedFullPath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase)
                 ? normalizedFullPath.Substring(normalizedRoot.Length)
                 : normalizedFullPath;
-            return new ScreenshotCaptureResult(normalizedFullPath, projectRelativePath, size, false);
+            // ⭐ PONT-17 — declared, not left Unknown: an editor window capture is a picture of a
+            //   TOOL WINDOW, never of the running game, so `uiIncluded` is legitimately false here.
+            return new ScreenshotCaptureResult(normalizedFullPath, projectRelativePath, size, isAsync: false,
+                imageBase64: null, imageWidth: 0, imageHeight: 0, mode: ScreenshotCaptureMode.EditorWindow);
         }
 
         private static string BuildFileName(string fileName)
