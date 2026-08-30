@@ -165,6 +165,68 @@ async def verify_edit_by_sha(
     return False
 
 
+# PONT-24 -- `resulting_state` is a TRUE value under a NAME THAT LIES, and it lies in both
+# directions.
+#
+# `[MEASURED 2026-08-30 by the `pont` seat in the editor's own source:
+#   MCPForUnity/Editor/Tools/RefreshUnity.cs:148-150
+#       string resultingState = EditorApplication.isCompiling ? "compiling"
+#                             : (EditorApplication.isUpdating ? "asset_import" : "idle");
+#   It is read at REPLY TIME, from the editor's global state, and it is returned on EVERY call --
+#   including a call that requested no compilation at all.]`
+#
+# TEN SESSIONS SHARE THIS EDITOR. Somebody is almost always compiling. So:
+#   compile="none"    -> "compiling" reads as "my call started a compilation".  It did not.
+#                        The caller then waits on a domain reload that was never his. A seat of
+#                        this workshop watched a reload counter for TEN MINUTES on exactly that
+#                        reading.
+#   compile="request" -> "idle" reads as "my compilation is done".  It can equally mean it has
+#                        NOT STARTED YET. This one is worse: it is a false GREEN, and a false
+#                        green is acted upon.
+#
+# ⇒ THE VALUE IS RIGHT; THE NAME PROMISES SOMETHING IT NEVER MEASURED. This project forbids a
+#   system to lie about its own state -- and a field that AFFIRMS is worse than one that stays
+#   silent, because silence gets checked and an affirmation does not.
+#
+# ⚠ THE REPAIR REPORTS, IT DOES NOT CONCLUDE. This server cannot know WHO is compiling, and it
+#   must not say. It says what the field is, what this call did or did not ask for, and which
+#   tool answers the question the caller actually has. Naming a cause would send somebody to
+#   repair the wrong thing -- the failure this workshop pays for the most.
+#
+# ⭐ Python, not C#: the field merely TRANSITS here. Repairing it on this side costs no domain
+#   reload, and a domain reload costs 2 to 9 minutes to ten seats at once.
+def annotate_resulting_state(response_dict: Any, compile_asked: str) -> Any:
+    """Attach the reading that keeps `resulting_state` from being read as a verdict.
+
+    Pure, and total: anything that is not a reply carrying that field comes back untouched, so
+    every return path of refresh_unity can pass through it without a guard of its own.
+    """
+    if not isinstance(response_dict, dict):
+        return response_dict
+    data = response_dict.get("data")
+    if not isinstance(data, dict) or "resulting_state" not in data:
+        return response_dict
+
+    if compile_asked == "none":
+        data["resulting_state_reading"] = (
+            "⚠ `resulting_state` is the EDITOR's state at reply time -- never the effect of THIS "
+            "call. This call requested NO compilation (compile='none'), so it cannot have caused "
+            "the state above. Ten sessions share this editor and a neighbour compiling is the "
+            "most frequent reading here, but this reply CANNOT tell you whose it is. "
+            "⇒ Do not wait on a domain reload on the strength of this field: ask domain_state for "
+            "the reload counter, or read_console (types=['error'])."
+        )
+    else:
+        data["resulting_state_reading"] = (
+            "⚠ `resulting_state` is the EDITOR's state at reply time -- never a verdict on THIS "
+            "call. In particular 'idle' does NOT mean your compilation finished: it means the "
+            "editor is not compiling AT THIS SECOND, which is equally true before it starts. "
+            "⇒ Confirm with domain_state (the reload counter moves once, and only once, per "
+            "reload) rather than concluding from this single field."
+        )
+    return response_dict
+
+
 @mcp_for_unity_tool(
     description="Request a Unity asset database refresh and optionally a script compilation. Can optionally wait for readiness.",
     annotations=ToolAnnotations(
@@ -207,6 +269,7 @@ async def refresh_unity(
     # If we sent the command and connection closed, the refresh was likely triggered successfully.
     # Convert MCPResponse to dict if needed
     response_dict = response if isinstance(response, dict) else (response.model_dump() if hasattr(response, "model_dump") else response.__dict__)
+    response_dict = annotate_resulting_state(response_dict, compile)
     if not response_dict.get("success", True):
         hint = response_dict.get("hint")
         err = (response_dict.get("error") or response_dict.get("message") or "").lower()
