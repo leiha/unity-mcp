@@ -48,15 +48,45 @@ source [main|beta|branch|local] »*. **Il réécrit le `manifest.json` du projet
 ⇒ ⛔ **ne l'invoque pas ici** ; notre montage est un chemin `file:` vers ce sous-module, et c'est
 `doctor.sh` (porte `MCP`) qui s'en aperçoit — *après coup.*
 
-## Nos correctifs, et où ils vivent
+## ⛔⛔ CE QUE COÛTE UN `.cs` ÉCRIT ICI — et rien ne te le dit au moment où tu l'écris
 
 ```
-PONT-01..06   d95d0b0d   pong qui nomme son chemin · Roslyn au lieu du repli CodeDom · un client
-                         ne coupe plus les autres · un Timeout cesse d'être une exécution fantôme ·
-                         le timeout désigne le bon coupable · interruption au-delà de 20 s
-PONT-07       a08d9606   un outil custom mal nommé faisait tomber TOUS les autres, en silence
-              938220d6   son juge : Server/tests/test_custom_tool_service_registration_isolation.py
+energeia/Packages/manifest.json   "com.coplaydev.unity-mcp": "file:../vendor/mcp-for-unity/MCPForUnity"
 ```
+⇒ ***ce plugin est un package LOCAL du projet consommateur : tout `.cs` que tu touches sous
+`MCPForUnity/` est importé, recompilé et RECHARGE LE DOMAINE — donc il SORT DU PLAYMODE, exactement
+comme un `.cs` d'`Assets/`.*** Neuf sessions partagent cet éditeur, et un rechargement leur coûte de
+2 à 9 minutes.
+⛔ **Ton lot d'outil n'est donc pas moins cher que le leur : il se prépare hors du dossier, se pose
+d'un bloc, et son import s'annonce au superviseur.** *Le chemin `file:` est écrit deux sections plus
+haut depuis toujours ; sa conséquence ne l'était nulle part.*
+⚠ **`Server/` (Python), lui, ne coûte RIEN à l'éditeur** — il vit dans le serveur MCP, pris en compte
+en ~2 s par `uv run --frozen --project`. **Les deux moitiés du pont n'ont pas le même prix : sache
+laquelle tu touches.**
+
+## Nos correctifs, et où ils vivent
+
+⛔ **Ne recopie aucune liste ici — elle a été périmée de treize correctifs.** Elle se re-dérive :
+```sh
+git -C vendor/mcp-for-unity log --format='%h %s' v9.7.3..HEAD
+```
+⭐ **Chaque correctif porte son numéro `PONT-NN` en tête de message, et son RÉCIT complet — ce qu'on
+voulait faire, ce que l'outil a répondu, ce qui a été renoncé — vit dans une seule file :**
+`energeia/Packages/com.energeia.pont/PROBLEMES-DE-L-OUTIL.md`. *Le `git log` dit ce qui a changé ;
+la file dit POURQUOI, et c'est elle que le PO a demandée.*
+
+⭐⭐ **LE DÉFAUT DE FOND QUE CES CORRECTIFS FERMENT UN À UN, et c'est le critère du PO — *« le plus
+parfait pour l'utilisation d'un LLM »* :**
+> ***Une capacité qu'un chemin de REFUS ne nomme pas n'existe pas.***
+Un outil documente ses capacités **là où on les lit quand tout va bien**, et se tait **là où on les
+cherche**. `TESTASM`, `NEW_TEST_OUTSIDE_ASSETS`, `IGNORE_STALE`, `init_timeout` : quatre capacités
+réelles, quatre refus muets, quatre postes bloqués sur un geste faisable.
+⇒ **Quand tu ajoutes un chemin d'échec ici, la question n'est pas *« mon message est-il exact ? »*
+mais *« nomme-t-il ce qui débloque ? »***
+⚠ **Et sa borne, payée le 2026-08-30** : un refus rapporte ce qu'il a **OBSERVÉ** et ne conclut rien
+à la place de son lecteur. *Un premier jet de PONT-21 faisait dire au refus « ZERO test cases ran » —
+c'était faux, les cas avaient tourné et étaient verts. Rendre un message « utile » en tranchant pour
+son lecteur est la façon dont cet outil se remet à mentir.*
 ⭐ **Nos OUTILS, eux, ne sont PAS ici — et c'est délibéré.** `ui_find`, `di_state`, `domain_state`
 vivent dans `energeia/Packages/com.energeia.pont/`, notre propre assembly, par le point
 d'extension `[McpForUnityTool]`. ⇒ ***une montée de version amont ne peut pas les emporter.***
@@ -68,7 +98,7 @@ chez le jeu.**
 ```sh
 git fetch upstream
 git -C . diff v9.7.3..upstream/beta -- MCPForUnity Server   # le coût réel, avant tout geste
-git rebase v10.1.2                                          # nos 3 commits par-dessus
+git rebase v10.1.2                                          # nos correctifs par-dessus (compte : le git log ci-dessus)
 ```
 ⚠ **Le `--check` d'un `git apply` de nos correctifs sur la cible est la seule mesure honnête de
 notre dette de fork.** ⛔ Et la montée **n'achète PAS** l'issue amont #1299 (l'éditeur qui a lancé

@@ -170,14 +170,49 @@ async def run_tests(
     init_timeout: Annotated[int | None,
                             "Initialization timeout in milliseconds. PlayMode tests may need longer "
                             "due to domain reload (default: 15000). Recommended: 120000 for PlayMode."] = None,
+    clear_stuck: Annotated[bool,
+                           "Release a test job that is stuck in 'running' and holding the lock, instead "
+                           "of starting a run. Answers a 'tests_running' refusal that never clears. "
+                           "Runs nothing: it reports whether a job was cleared."] = False,
 ) -> RunTestsStartResponse | MCPResponse:
     if init_timeout is not None and init_timeout <= 0:
         return MCPResponse(success=False, error="init_timeout must be a positive integer (milliseconds) or None")
 
     unity_instance = await get_unity_instance_from_context(ctx)
 
+    # PONT-22. `clear_stuck` was read by the editor (RunTests.cs:24) and declared NOWHERE on this
+    # side, so no MCP client could ever send it: the schema exposed to a caller is built from these
+    # annotated parameters alone. ⛔ A capability absent from the schema is not merely undocumented,
+    # it is unreachable -- and this one is the ONLY release for a test job stuck in `running`.
+    # A crashed editor or a lost acknowledgement left `tests_running` held with no way out but a
+    # human restarting Unity.
+    #
+    # ⛔⛔ AND EXPOSING THE PARAMETER ALONE WOULD HAVE CHANGED NOTHING. The preflight below refuses
+    # on `tests_running` BEFORE anything reaches the editor, so the one call that clears the lock
+    # would have been turned away by the lock it clears. The gate is therefore skipped for this
+    # request -- and only for this one, which starts no tests.
+    if clear_stuck:
+        return await unity_transport.send_with_unity_instance(
+            async_send_command_with_retry,
+            unity_instance,
+            "run_tests",
+            {"clear_stuck": True},
+        )
+
     gate = await preflight(ctx, requires_no_tests=True, wait_for_no_compile=True, refresh_if_dirty=True)
     if isinstance(gate, MCPResponse):
+        # PONT-22. The gate's own wording is shared by several tools and cannot name a knob that
+        # only this one has. A refusal that does not name what unblocks it does not expose that
+        # capability at all: the caller reads "retry", retries the identical call, and loops.
+        data = gate.data if isinstance(gate.data, dict) else {}
+        if data.get("reason") == "tests_running":
+            gate.message = (
+                "tests_running: another test job holds the runner. If it never clears -- an editor "
+                "that crashed mid-run, or an acknowledgement lost by the bridge -- call run_tests "
+                "again with clear_stuck=True: it starts nothing and releases the lock. "
+                "⚠ Only do that once you have established that no run is genuinely in flight; "
+                "get_test_job tells you what the current job has reported so far."
+            )
         return gate
 
     def _coerce_string_list(value) -> list[str] | None:
