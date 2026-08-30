@@ -169,11 +169,36 @@ namespace MCPForUnity.Runtime.Helpers
 #if UNITY_EDITOR
         // Synchronously drive a WaitForEndOfFrame ScreenshotCapturer by pumping the editor's
         // player loop. Play-mode only; EditorApplication.Step is a no-op in edit mode.
+        //
+        // ⛔⛔ PONT-16 — TAKING A PICTURE USED TO STOP THE GAME, AND LEAVE IT STOPPED.
+        // `[MEASURED 2026-08-30 03:47-03:52 by the `pont` seat (session f8ff906a), on the live
+        //  energeia editor, party running. Found by accident: a tool read isPaused before its own
+        //  capture and again after, and the two disagreed.]`
+        //
+        //   EditorApplication.Step() PAUSES the editor — that is how it single-steps. Nothing here
+        //   put it back. ⇒ every screenshot taken in play mode, by ANY caller (manage_camera,
+        //   manage_scene, gesture_shot), left the game frozen, and the three signals every seat
+        //   reads afterwards — isPlaying:true, the container built, success:true — all still said
+        //   "it is fine". Measured verbatim: isPaused=True · isPlaying=True · frame stuck at 4191.
+        //
+        // ⭐ WHAT IT COST BEFORE ANYONE KNEW THE CAUSE. Three seats of this workshop had
+        //   independently written the same warning to each other — "play mode can be PAUSED while
+        //   three greens say it is fine, the discriminant is isPaused" — and none could name why.
+        //   The camera was not observing the world: it was stopping it.
+        //
+        // ⛔ AND THE SECOND, WORSE HALF. A paused editor makes the WaitForEndOfFrame callback miss
+        //   its window, this returns null, and CaptureComposited then falls back to a plain camera
+        //   render — which contains NO Screen Space Overlay and NO UI Toolkit. The file that comes
+        //   out is a clean, sharp, correctly dated picture of an empty skybox, and nothing in the
+        //   reply says the UI is missing. `[One such image was produced at 03:50 and is what
+        //   revealed this.]` ⇒ restoring the pause state fixes the freeze AND the silent fallback,
+        //   because the fallback was only ever a consequence of the freeze.
         private static Texture2D CaptureCompositedAfterFrame(int superSize, int timeoutSteps = 5)
         {
             Texture2D result = null;
             bool done = false;
             bool callerReturned = false;
+            bool wasPaused = UnityEditor.EditorApplication.isPaused;
             ScreenshotCapturer.Begin(superSize, tex =>
             {
                 // Late completion after the spin loop timed out: caller will never consume
@@ -186,11 +211,20 @@ namespace MCPForUnity.Runtime.Helpers
                 result = tex;
                 done = true;
             });
-            for (int i = 0; i < timeoutSteps && !done; i++)
+            try
             {
-                UnityEditor.EditorApplication.Step();
+                for (int i = 0; i < timeoutSteps && !done; i++)
+                {
+                    UnityEditor.EditorApplication.Step();
+                }
             }
-            callerReturned = true;
+            finally
+            {
+                callerReturned = true;
+                // ⭐ Restored in a `finally`: an exception in the loop would otherwise leave the
+                //   whole workshop's editor frozen, which is exactly the failure being repaired.
+                UnityEditor.EditorApplication.isPaused = wasPaused;
+            }
             return result;
         }
 #endif
@@ -229,8 +263,29 @@ namespace MCPForUnity.Runtime.Helpers
                     // Fallback to camera-based if ScreenCapture fails
                     var cam = FindAvailableCamera();
                     if (cam != null)
+                    {
+                        // ⛔⛔ PONT-16 — THIS FALLBACK PRODUCES A PICTURE WITH NO UI AT ALL, AND IT
+                        //   USED TO DO IT IN SILENCE. A camera render excludes every Screen Space
+                        //   Overlay canvas and every UI Toolkit panel: what comes out is a clean,
+                        //   sharp, correctly dated image of the 3D scene alone — an empty skybox on
+                        //   a project whose entire screen is UI Toolkit. `[MEASURED 2026-08-30 03:50
+                        //   by the `pont` seat: the file looked perfect and showed nothing of the
+                        //   running game.]`
+                        // ⭐ A picture that silently drops the thing you were photographing is the
+                        //   most expensive kind of lie an instrument can tell, because it does not
+                        //   look like a failure. It is now said out loud, in the console every seat
+                        //   reads, naming what is missing rather than merely that a fallback ran.
+                        Debug.LogWarning(
+                            "[MCPForUnity] SCREENSHOT FELL BACK TO A CAMERA RENDER: the composited "
+                          + "capture returned null. ⛔ THE RESULTING IMAGE CONTAINS NO Screen Space "
+                          + "Overlay CANVAS AND NO UI TOOLKIT PANEL — on a UI-driven project it "
+                          + "shows the 3D scene alone and looks perfectly healthy. Do not read a "
+                          + "screen off it. Most common cause: the editor was PAUSED, so the "
+                          + "WaitForEndOfFrame capture missed its window (check "
+                          + "EditorApplication.isPaused).");
                         return CaptureFromCameraToProjectFolder(cam, fileName, superSize, ensureUniqueFileName,
                             includeImage, maxResolution, folderOverride: folderOverride);
+                    }
                     throw new InvalidOperationException("ScreenCapture.CaptureScreenshotAsTexture returned null and no fallback camera available.");
                 }
 
